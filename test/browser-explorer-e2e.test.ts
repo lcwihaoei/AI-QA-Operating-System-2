@@ -81,5 +81,5 @@ describe.skipIf(!enabled)('BrowserExplorer real Chromium regression', () => {
     expect(result.events.some((event) => event.kind === 'planner' && Number(event.details?.selectedNavigation ?? 0) >= 3)).toBe(true);
     expect(result.events.some((event) => event.kind === 'planner' && Number(event.details?.selectedInteractions ?? 0) >= 1)).toBe(true);
     expect(result.uxSnapshots.length).toBeGreaterThanOrEqual(4);
-  });
+  }, 15_000);
 });

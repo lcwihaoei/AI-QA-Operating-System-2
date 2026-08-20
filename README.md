@@ -1,6 +1,6 @@
 # AI QA Operating System
 
-Provider-neutral autonomous quality platform that combines functional QA, visual/API/device evidence, autonomous fixing, an operational control plane, UX/product intelligence and explicit-learning experiments.
+Provider-neutral autonomous quality platform that combines functional QA, visual/API/device evidence, evidence-rich reporting, security-first backend generation, governed AI repair, an operational control plane, UX/product intelligence and explicit-learning experiments.
 
 ## Current roadmap status
 
@@ -13,11 +13,11 @@ Provider-neutral autonomous quality platform that combines functional QA, visual
 | M5 Device QA | ✅ | Appium Android/iOS smoke/explore, app boundary, crash/ANR/log oracles |
 | M6 GitHub QA planning | ✅ core | sanitized issue plan + regression memory; no default repository mutation |
 | M7 Autonomous Fix Agent | ✅ core | isolated fix branch, bounded model patch, targeted/reproduction/regression gates |
-| M8 QA Control Plane | ✅ core | run registry, workers, queue/leases, read-only dashboard |
+| M8 QA Control Plane | ✅ core | run registry, workers, queue/leases, responsive bilingual dashboard |
 | M9 UX/Product Intelligence | ✅ core | autonomous non-bug UX opportunities + optional aggregate-only reasoner |
 | M10 UX Experiment/Self-Learning | ✅ core | hypotheses, control/variant scoring, guardrails, explicit learning memory |
 
-`main` is not modified by autonomous QA/fix flows. This development branch/PR remains the integration surface until reviewed.
+`main` is not modified by autonomous QA/fix flows. Development branches and PRs remain the integration surface until reviewed.
 
 ## Standard QA run
 
@@ -48,7 +48,7 @@ npm run qa -- --url https://staging.example.com --ux-product my-product --update
 
 ## Beta.7 — Evidence-rich QA report
 
-Every QA run now produces an offline review bundle under `.qa-runs/<run-id>/report/`:
+Every QA run produces an offline review bundle under `.qa-runs/<run-id>/report/`:
 
 ```text
 report/
@@ -69,6 +69,66 @@ npm run qa -- \
 ```
 
 Video is opt-in because it increases storage use and may capture on-screen content. Use `--no-evidence-report` to disable the report layer. See [`docs/EVIDENCE_REPORT.md`](docs/EVIDENCE_REPORT.md).
+
+## Beta.8 — Frontend-to-backend generation
+
+Beta.8 analyzes an existing frontend before backend work begins. Discovery is bounded and evidence-driven: it inventories supported framework markers, routes, forms, state, API candidates, mock/fixture sources and entity candidates while skipping generated/vendor/build directories, symlinks and sensitive key/config material.
+
+The backend architecture is not silently inferred. A decision interview must explicitly confirm choices such as backend language/framework, API style, database strategy, authentication, operations/security and mock transition policy before a blueprint can be frozen.
+
+The implementation flow is governed:
+
+```text
+Frontend discovery
+      ↓
+Architecture interview
+      ↓
+Security-first blueprint
+      ↓
+Dependency-ordered WorkPlan
+      ↓
+Approve exact scope
+      ↓
+Generate bounded proposal
+      ↓
+Confirm exact proposal hash
+      ↓
+Isolated branch execution
+      ↓
+Targeted tests → regression → Beta.7 QA
+```
+
+Mock data is handled source-by-source with explicit retain / rewire-only / convert-to-seed / remove-after-live-verification decisions. Destructive removal requires live-backend verification and exact source guards. See [`docs/BACKEND_GENERATION.md`](docs/BACKEND_GENERATION.md).
+
+## Beta.9 — Governed repair loop and Product / Feature Planner
+
+Beta.9 consumes Beta.7 evidence and closes the repair loop without granting unrestricted autonomous mutation:
+
+```text
+Select findings
+      ↓
+Generate fix plan
+      ↓
+Review root cause / files / risk / tests
+      ↓
+Approve exact scope
+      ↓
+Execute exact reviewed plan
+      ↓
+Targeted tests → regression → Beta.7 QA
+      ↓
+Correlate fresh evidence
+      ↓
+Complete or bounded retry
+```
+
+A successful QA command is not considered proof of resolution. Fresh Beta.7 evidence is compared with the source run; stale, invalid or ambiguous post-run results are rejected rather than guessed. Persistent findings can retry only within the enforced attempt budget, with a new plan and approval.
+
+The management dashboard supports `繁體 | English`, System / Light / Dark, desktop and mobile RWD, and governed Beta.8/Beta.9 workflows. Product / Feature Planner adds a non-mutating planning path:
+
+`Opportunity → Explicit decision interview → Alternative selection → Frozen blueprint → WorkPlan`
+
+Every generated feature/backend/fix WorkItem remains approval-required and starts with source mutation disabled. See [`docs/BETA9_AUTO_FIX.md`](docs/BETA9_AUTO_FIX.md) and [`docs/FEATURE_PLANNER.md`](docs/FEATURE_PLANNER.md).
 
 ## M7 — Autonomous Fix Agent
 
@@ -103,7 +163,7 @@ See [`docs/FIX_AGENT.md`](docs/FIX_AGENT.md).
 npm run dashboard -- --state .qa-control/state.json
 ```
 
-The control plane stores bounded run summaries, UX score/opportunity counts, worker heartbeats, capability-aware queued jobs, leases and attempt budgets. The dashboard is read-only and loopback-only by default. Remote binding requires `--allow-remote` plus `AIQA_DASHBOARD_TOKEN`.
+The control plane stores bounded run summaries, UX score/opportunity counts, worker heartbeats, capability-aware queued jobs, leases and attempt budgets. The dashboard is loopback-only and read-only by default. Mutation-capable dashboard actions require explicit action mode and remain governed by their workflow-specific approval gates. Remote binding requires authentication and remains restricted.
 
 See [`docs/CONTROL_PLANE.md`](docs/CONTROL_PLANE.md).
 
@@ -151,28 +211,31 @@ ux-opportunities.json
 github-issue-plan.json
 ```
 
-Sensitive browser/device/log semantics remain intentionally minimized. UX reasoners receive aggregate metrics, device raw logs are not persisted, semantic values use hashes, GitHub issue-plan text is sanitized, and report evidence paths are kept relative to the run directory.
+Sensitive browser/device/log semantics remain intentionally minimized. UX reasoners receive aggregate metrics, device raw logs are not persisted, semantic values use hashes, GitHub issue-plan text is sanitized, and report evidence paths are kept relative to the run directory. Backend/fix model context is bounded and probable credentials/tokens/passwords are redacted before remote transmission.
 
 ## Architecture
 
 ```text
-                                AI QA Manager
-                                     │
-      ┌───────────────┬──────────────┼──────────────┬───────────────┐
-      ▼               ▼              ▼              ▼               ▼
- Browser/Planner   Visual QA       API QA        Device QA       UX Intelligence
-      │               │              │              │               │
-      └───────────────┴───────┬──────┴──────────────┴───────────────┘
-                              ▼
-                     Evidence / Findings / UX
-                              │
-                  ┌───────────┼────────────┐
-                  ▼           ▼            ▼
-             GitHub Plan   Fix Agent   UX Experiments
-                  │           │            │
-                  └───────────┼────────────┘
-                              ▼
+                                  AI QA Manager
+                                       │
+      ┌───────────────┬────────────────┼───────────────┬───────────────┐
+      ▼               ▼                ▼               ▼               ▼
+ Browser/Planner   Visual QA         API QA         Device QA      UX Intelligence
+      │               │                │               │               │
+      └───────────────┴─────────┬──────┴───────────────┴───────────────┘
+                                ▼
+                       Evidence / Findings / UX
+                                │
+                 ┌──────────────┼──────────────────┐
+                 ▼              ▼                  ▼
+          Backend Planner   Governed Fix      UX Experiments
+                 │              │                  │
+                 └──────────────┼──────────────────┘
+                                ▼
                     Evidence Report / Control Plane
+                                │
+                                ▼
+                      Product / Feature Planner
 ```
 
-The next work after M10 is hardening rather than another required milestone: real-world project adapters, transactional control-plane storage, richer task definitions, and deployment packaging.
+Further work is hardening rather than another required milestone: broader real-world adapters, transactional control-plane storage, stronger packaging/release automation, additional adversarial fixtures and deployment integration behind explicit operator gates.

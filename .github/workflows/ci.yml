@@ -13,10 +13,42 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Repository safety scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE '(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{32,})' -- . ':(exclude).github/workflows/release.yml' ':(exclude).github/workflows/ci.yml'; then
+            echo 'Potential credential/private-key material detected.' >&2
+            exit 1
+          fi
+          if git grep -nE '^(<<<<<<< |>>>>>>> )' -- .; then
+            echo 'Unresolved merge-conflict marker detected.' >&2
+            exit 1
+          fi
+          bad=0
+          while IFS= read -r -d '' file; do
+            [ -f "$file" ] || continue
+            size="$(wc -c < "$file")"
+            if [ "$size" -gt 5242880 ]; then
+              echo "Tracked file exceeds 5 MiB: $file ($size bytes)" >&2
+              bad=1
+            fi
+          done < <(git ls-files -z)
+          test "$bad" -eq 0
+
       - run: npm install --no-audit --no-fund
+
+      - name: Dependency vulnerability gate
+        run: npm audit --audit-level=high
+
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
+
       - name: Run full build, unit and real-browser regression suite
         run: npm run check
         env:
           AIQA_BROWSER_E2E: '1'
+
+      - name: Verify package contents
+        run: npm pack --dry-run

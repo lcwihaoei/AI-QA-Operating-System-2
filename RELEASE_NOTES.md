@@ -1,85 +1,102 @@
-# AI QA Operating System v0.10.0-beta.7
+# AI QA Operating System v0.10.0-beta.9
 
-Evidence-reporting release that turns the reliability work from beta.6 into a portable QA deliverable for engineering, product, UX and release review.
+Beta.9 turns the Beta.7 evidence layer and Beta.8 backend-generation pipeline into a governed development loop: understand an existing frontend, confirm architecture decisions, build bounded backend work, transition mocks safely, run Beta.7 QA, select findings, propose fixes, require approval, execute in isolation, and verify the result with fresh evidence.
 
-## Evidence-rich report bundle
+## Management dashboard and Product / Feature Planner
 
-Every normal QA run now produces an offline report bundle under `.qa-runs/<run-id>/report/`:
+The management dashboard now provides a responsive control surface with:
 
-- `index.html` — interactive review UI;
-- `report-data.json` — structured report model;
-- `executive-summary.md` — compact handoff summary.
+- `繁體 | English` language switching;
+- System / Light / Dark appearance;
+- desktop sidebar and mobile navigation;
+- Dashboard, Findings, Workflows, Tasks, Reports, Beta.8, Beta.9, Settings and Product / Feature Planner surfaces.
 
-The HTML report contains Executive, Product/UX and Engineering views and requires no external JavaScript or stylesheet dependency.
+Product / Feature Planner converts a product request into an explicit reviewable contract before any source mutation is allowed:
 
-## Screenshot and video evidence
+`Opportunity → Decision interview → Alternative selection → Frozen blueprint → Dependency-ordered WorkPlan`
 
-- Deterministic visual findings link directly to their captured screenshots.
-- Visual screenshots are captured at viewport size so geometry rectangles can be rendered as issue annotations in the correct location.
-- `--record-video` enables one Playwright recording per requested visual viewport and links recordings from affected findings.
-- Video remains opt-in because it increases evidence size and can contain on-screen product data.
-- `--no-evidence-report` disables the report layer without changing the underlying QA run.
+Required product decisions include user outcome, target users, existing-flow compatibility, design-system boundary, data sensitivity and release strategy. Every generated WorkItem starts with source mutation disabled and requires a separate approval/execution workflow.
 
-## Engineering remediation mapping
+## Beta.8 frontend-to-backend generation
 
-Each finding can now expose:
+Beta.8 adds a security-first pipeline for turning an existing frontend into an explicit backend implementation plan:
 
-- severity, classification, regression status and confidence;
-- expected versus actual behavior;
-- recorded reproduction steps;
-- screenshot/video evidence;
-- bounded root-cause hypothesis;
-- recommended engineering change;
-- regression risk;
-- required regression-test guidance.
+- bounded frontend discovery for React, Vue, Svelte, Angular, vanilla and additional supported frontend patterns;
+- framework, route, form, state, API-candidate, mock/fixture and entity inventory with source evidence and confidence;
+- generated/vendor/build directories are skipped, symlinks are not followed, and sensitive key/config material is not read;
+- mandatory architecture interview for backend language/framework, API style, database strategy, auth, storage, operations, security and mock/release policy;
+- deterministic backend blueprint, security controls, threat-surface mapping, task graph and mock-migration plan;
+- human-approved exact source scope before proposal generation;
+- exact proposal-hash confirmation before mutation;
+- clean checkout and isolated `aiqa/backend/<task>` branch;
+- allowlisted targeted/regression/Beta.7 verification commands;
+- rollback on failure; successful changes remain reviewable rather than silently merged.
 
-Source attribution has an explicit safety boundary. If a run does not contain confirmed `sourceFile`/`sourceSymbol` metadata, the report displays `SOURCE_NOT_CONFIRMED` rather than inventing a component or file path from a screenshot or selector.
+Mock transition is source-by-source and supports retain, rewire-only, convert-to-seed and remove-after-live-verification. Destructive removal requires explicit approval, live-backend verification, exact source/hash guards and QA gates.
 
-## Product and UX review
+## Beta.8 final QA handoff
 
-- UX opportunities are presented independently from deterministic product defects.
-- High-impact/high-confidence opportunities are surfaced as quick wins.
-- Executive regression counters summarize visual-baseline and GitHub finding-memory new, persistent and resolved states.
-- Finding filters allow reviewers to focus on severity and regression state without running a report server.
+A Beta.8 implementation cannot be treated as complete only because code generation or local tests succeeded. The final handoff runs Beta.7 evidence-rich QA and records the resulting finding/report summary. Critical/High findings keep the handoff blocked. The resulting Beta.7 evidence can become the source finding set for Beta.9.
 
-## Portability and privacy
+## Beta.9 governed AI auto-fix
 
-- Report evidence references are relative to the run directory; machine-specific absolute evidence paths are not written to `report-data.json`.
-- Candidate evidence outside the current run directory is not linked into the report.
-- Dynamic report text is HTML-escaped before rendering.
-- Report generation does not update visual, GitHub or UX baselines and does not create external issues.
-- Existing baseline/memory opt-in safety boundaries remain unchanged.
+Beta.9 closes the repair loop without becoming an unrestricted autonomous repair daemon:
 
-## Baseline compatibility
+`Select findings → Generate fix plan → Review → Approve exact files → Execute → Beta.7 QA → Correlate → Complete or bounded retry`
 
-Beta.7 does not change the beta.6 visual classifier or finding fingerprint algorithm. Existing beta.6 reliability boundaries remain in force:
+Key controls:
 
-- visual baseline schema 3 / `dom-geometry-v3`;
-- GitHub regression memory classifier `qa-engine-beta6` with `finding-v2` fingerprints.
+- only explicitly selected Beta.7 finding fingerprints become work;
+- model diagnosis receives bounded source context with probable secrets redacted;
+- fix plans include root cause, recommended change, regression risk, confidence, exact file operations and verification commands;
+- each plan has an immutable deterministic `planHash`;
+- approval scope is separately bound to the WorkItem;
+- execution requires the exact reviewed plan plus explicit write acknowledgement;
+- default branches are refused and execution runs on isolated `aiqa/fix/<work-item>` branches;
+- sensitive/workflow/control-artifact paths are restricted;
+- source replacement is SHA-256 guarded;
+- targeted tests, regression and Beta.7 QA are required;
+- failures roll back; successful changes are not automatically pushed or merged.
 
-A beta.7 report can therefore be layered on a healthy beta.6-derived baseline without an automatic migration. Baseline acceptance remains explicit.
+## Post-QA correlation and retry budget
 
-## Verified release gates
+A successful QA command is not treated as proof that a finding was fixed. A fresh post-attempt Beta.7 `result.json` is correlated against the source run and classifies the selected finding as persistent, persistent-equivalent, resolved or inconclusive.
 
-The prerelease workflow requires:
+Completion requires resolution and no newly introduced Critical/High regression. Persistent findings may receive a bounded retry authorization only while the attempt budget remains. A retry requires a new fix plan and a new approval; the system does not silently reuse the previous plan.
 
-- tracked-file credential/private-key, merge-conflict and 5 MiB safety scans;
-- `npm audit --audit-level=high`;
-- TypeScript build and the full Vitest suite;
-- Playwright Chromium installation;
-- BrowserExplorer breadth/real-click E2E;
-- VisualAgent provenance and real video-finalization E2E;
-- DOM-geometry false-positive/true-positive regression gates;
-- offline evidence-report HTML/JSON/Markdown generation and HTML-escaping/relative-path tests;
-- end-to-end `QaManager` report generation from a real Chromium visual finding, including screenshot and video evidence;
-- `npm pack --dry-run`;
-- release tarball creation and SHA-256 checksum.
+Fresh-result discovery is conservative: stale/source-run results are excluded, symlinked or invalid results are not trusted, exactly one fresh candidate may be auto-selected, and ambiguity blocks correlation instead of guessing.
+
+## Evidence-rich reporting retained from Beta.7
+
+Every normal QA run continues to produce the offline evidence bundle under `.qa-runs/<run-id>/report/`:
+
+- `index.html`;
+- `report-data.json`;
+- `executive-summary.md`.
+
+Reports retain Executive, Product/UX and Engineering views, screenshots, optional viewport videos, reproduction evidence, regression state, confidence, bounded remediation guidance and explicit `SOURCE_NOT_CONFIRMED` behavior when source attribution is unavailable.
+
+## Release verification gates
+
+The Beta.9 prerelease candidate requires:
+
+- tracked-file credential/private-key, merge-conflict and oversized-file safety scanning;
+- high-severity dependency vulnerability gate;
+- TypeScript build and complete Vitest suite;
+- Playwright Chromium regressions;
+- Beta.7 evidence-report/browser/video regressions;
+- Beta.8 discovery matrix, architecture, security blueprint, executor, mock migration and final-QA handoff regressions;
+- Beta.9 planning, approval, execution, post-QA correlation, retry and fresh-result discovery regressions;
+- Product / Feature Planner HTTP, generated-JavaScript and real Chromium desktop/mobile bilingual regressions;
+- `npm pack --dry-run` and release artifact SHA-256 generation in the verified-release workflow.
 
 ## Safety posture
 
 - This remains a prerelease.
-- Release creation targets the verified beta.7 integration-branch SHA; `main` remains the review/merge surface.
-- Report presentation never changes the underlying finding classifier.
-- Video capture is explicit opt-in.
-- Source paths are never guessed when source metadata is absent.
-- Baseline/learning writes remain explicit opt-ins and are never silently accepted.
+- Planning never grants source mutation by itself.
+- Every generated backend or fix mutation requires explicit bounded approval.
+- No automatic commit, push, merge or deployment is performed by Beta.8/Beta.9 executors.
+- `.qa-*` control/evidence artifacts are reserved and protected from model-generated source changes.
+- Probable credentials/tokens/passwords are redacted before remote-model context transmission.
+- Fresh Beta.7 evidence determines completion rather than model self-assessment.
+- The verified-release workflow remains intentionally separate from ordinary pull-request CI.
