@@ -76,7 +76,7 @@ program.command('select')
   .action(async (options: { result: string; fingerprint: string[]; project?: string; out: string }) => {
     const result = await readQaResult(options.result);
     const plan = buildBeta9Plan({ result: result as QaRunResult, selectedFingerprints: options.fingerprint, project: options.project });
-    await writeJson(options.out, plan);
+    await writeImmutableJson(options.out, plan);
     process.stdout.write(`Beta.9 plan created for ${plan.selectedFindings.length} explicitly selected finding(s). All WorkItems remain mutation-blocked.\n`);
   });
 
@@ -85,7 +85,7 @@ program.command('plan-fix')
   .requiredOption('--item <id>', 'selected Beta.9 WorkItem id')
   .requiredOption('--repo <path>', 'local target git checkout for read-only source context')
   .requiredOption('--model-endpoint <url>', 'provider-neutral Beta.9 fix-plan model gateway')
-  .option('--out <path>', 'fix plan output path')
+  .option('--out <path>', 'immutable fix plan output path')
   .action(async (options: { plan: string; item: string; repo: string; modelEndpoint: string; out?: string }) => {
     const beta9 = await readJson<Beta9Plan>(options.plan);
     assertPlan(beta9);
@@ -97,10 +97,11 @@ program.command('plan-fix')
       process.exitCode = 2;
       return;
     }
+    const attempt = beta9.retryAuthorizations?.[options.item]?.nextAttempt ?? 1;
+    const out = options.out ?? `.qa-beta9/fix-plans/${options.item}-attempt-${attempt}-${result.plan.planHash.slice(0, 12)}.json`;
+    await writeImmutableJson(out, result.plan);
     await writeJson(options.plan, beta9);
-    const out = options.out ?? `.qa-beta9/fix-plans/${options.item}.json`;
-    await writeJson(out, result.plan);
-    process.stdout.write(`Beta.9 fix plan written to ${path.resolve(out)}. Review root cause, risk, files, tests and exact plan hash ${result.plan.planHash}; no repository mutation has occurred.\n`);
+    process.stdout.write(`Beta.9 immutable fix plan written to ${path.resolve(out)}. Review root cause, risk, files, tests and exact plan hash ${result.plan.planHash}; no repository mutation has occurred.\n`);
   });
 
 program.command('approve-fix')
