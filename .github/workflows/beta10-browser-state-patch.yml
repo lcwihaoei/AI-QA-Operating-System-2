@@ -12,7 +12,6 @@ permissions:
 
 jobs:
   patch:
-    if: github.repository == 'lcwihaoei/AI-QA-Operating-System-2'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,9 +20,11 @@ jobs:
           ref: feature/v0.10.0-beta.10-real-project-hardening
           fetch-depth: 0
 
-      - name: Apply precise collapsed-region suppression
-        shell: python
+      - name: Patch BrowserExplorer state suppression
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 <<'PY'
           from pathlib import Path
           p = Path('src/agents/browser-explorer.ts')
           s = p.read_text()
@@ -63,10 +64,11 @@ jobs:
       };
 '''
           if old not in s:
-              raise SystemExit('expected browser-explorer suppression block not found')
+              raise SystemExit('expected suppression block not found')
           p.write_text(s.replace(old, new, 1))
+          PY
 
-      - name: Commit production patch only
+      - name: Commit exact production file
         shell: bash
         run: |
           set -euo pipefail
