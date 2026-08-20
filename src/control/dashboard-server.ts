@@ -1,11 +1,14 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { BackendVerificationCommand } from '../backend/executor-types.js';
+import type { MockMigrationAction } from '../backend/mock-migration.js';
 import { discoverFreshBeta7Result } from './beta7-result-discovery.js';
 import { Beta8AcceptanceDashboardService } from './beta8-acceptance-service.js';
+import { Beta8DashboardActionService } from './beta8-action-service.js';
 import { beta8DashboardJs } from './beta8-dashboard.js';
 import { beta8DashboardCss } from './beta8-dashboard-ui.js';
-import { Beta8DashboardActionService } from './beta8-action-service.js';
+import { Beta8MockMigrationDashboardService } from './beta8-mock-migration-service.js';
 import {
   beta9DashboardJs,
   createBeta9SelectionFromDashboard,
@@ -27,6 +30,8 @@ export interface DashboardServerOptions {
   beta8ArtifactRoot?: string;
   beta8ModelEndpoint?: string;
   beta8ModelToken?: string;
+  beta8MockModelEndpoint?: string;
+  beta8MockModelToken?: string;
   beta9PlanPath?: string;
   beta7ResultPath?: string;
   beta9RepoPath?: string;
@@ -118,6 +123,18 @@ function requiredString(record: Record<string, unknown>, key: string, max = 500)
   return value.trim();
 }
 
+function verificationCommand(record: Record<string, unknown>, key: string, required = true): BackendVerificationCommand | undefined {
+  const value = record[key];
+  if (value === undefined && !required) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${key} must be a verification command object`);
+  const command = value as Record<string, unknown>;
+  const program = requiredString(command, 'program', 50);
+  if (!Array.isArray(command.args) || command.args.length > 40 || !command.args.every((arg) => typeof arg === 'string' && arg.length <= 500)) {
+    throw new Error(`${key}.args must be an array of up to 40 bounded strings`);
+  }
+  return { program, args: command.args as string[] };
+}
+
 function dashboardDocument(): string {
   return dashboardHtml()
     .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
@@ -125,7 +142,7 @@ function dashboardDocument(): string {
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing|dependencies|clean working tree|acceptance/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing|dependencies|clean working tree|acceptance|mock migration|live backend/i.test(message)) return 409;
   return 400;
 }
 
@@ -146,6 +163,12 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     modelToken: options.beta8ModelToken,
   });
   const beta8Acceptance = options.beta8RepoPath ? new Beta8AcceptanceDashboardService(options.beta8RepoPath, beta8ArtifactRoot) : undefined;
+  const beta8MockMigration = new Beta8MockMigrationDashboardService({
+    repoPath: options.beta8RepoPath,
+    artifactRoot: beta8ArtifactRoot,
+    modelEndpoint: options.beta8MockModelEndpoint,
+    modelToken: options.beta8MockModelToken,
+  });
   const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
     sourceResultPath: options.beta7ResultPath!,
@@ -206,6 +229,40 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           if (!/^[a-f0-9]{64}$/i.test(acceptanceHash)) throw new Error('acceptanceHash must be a sha256');
           const acceptedBy = requiredString(body, 'acceptedBy', 120);
           return json(response, 200, await beta8Acceptance.accept(itemId, acceptanceHash, acceptedBy));
+        }
+        if (pathname === '/api/beta8/mock-approve') {
+          const recordId = requiredString(body, 'recordId', 120);
+          const approvedBy = requiredString(body, 'approvedBy', 120);
+          const action = requiredString(body, 'action', 80) as MockMigrationAction;
+          if (!['retain', 'rewire-only', 'convert-to-seed', 'remove-after-live-verification'].includes(action)) throw new Error('invalid mock migration action');
+          if (body.seedDestination !== undefined && typeof body.seedDestination !== 'string') throw new Error('seedDestination must be a string');
+          if (body.removeSourceAfterSeed !== undefined && typeof body.removeSourceAfterSeed !== 'boolean') throw new Error('removeSourceAfterSeed must be boolean');
+          return json(response, 200, await beta8MockMigration.approve({
+            recordId,
+            approvedBy,
+            action,
+            ...(typeof body.seedDestination === 'string' && body.seedDestination.trim() ? { seedDestination: body.seedDestination.trim() } : {}),
+            removeSourceAfterSeed: body.removeSourceAfterSeed === true,
+          }));
+        }
+        if (pathname === '/api/beta8/mock-verify-live') {
+          const recordId = requiredString(body, 'recordId', 120);
+          return json(response, 200, await beta8MockMigration.verifyLive(recordId, verificationCommand(body, 'command')!));
+        }
+        if (pathname === '/api/beta8/mock-complete') {
+          const recordId = requiredString(body, 'recordId', 120);
+          return json(response, 200, await beta8MockMigration.completeNoMutation(recordId, verificationCommand(body, 'beta7Qa', false)));
+        }
+        if (pathname === '/api/beta8/mock-propose') {
+          const recordId = requiredString(body, 'recordId', 120);
+          return json(response, 200, await beta8MockMigration.propose(recordId));
+        }
+        if (pathname === '/api/beta8/mock-execute') {
+          const recordId = requiredString(body, 'recordId', 120);
+          const proposalHash = requiredString(body, 'proposalHash', 64);
+          if (!/^[a-f0-9]{64}$/i.test(proposalHash)) throw new Error('proposalHash must be a sha256');
+          if (body.confirmWrite !== true) throw new Error('mock-execute requires confirmWrite=true');
+          return json(response, 200, await beta8MockMigration.execute(recordId, proposalHash, true));
         }
         return json(response, 404, { error: 'unknown Beta.8 dashboard action' });
       } catch (error: unknown) {
@@ -283,11 +340,12 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
       }
     }
     if (pathname === '/api/beta8') {
-      const [summary, acceptance] = await Promise.all([
+      const [summary, acceptance, mockMigration] = await Promise.all([
         beta8Actions.summary(),
         beta8Acceptance ? beta8Acceptance.summary() : Promise.resolve({ available: false, items: {} }),
+        beta8MockMigration.summary(),
       ]);
-      return json(response, 200, { ...summary, acceptance, actionsAllowed: actionRequestAllowed(request, host, allowActions) });
+      return json(response, 200, { ...summary, acceptance, mockMigration, actionsAllowed: actionRequestAllowed(request, host, allowActions) });
     }
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/api/beta9/actions') {
