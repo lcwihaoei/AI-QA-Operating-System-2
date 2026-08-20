@@ -57,3 +57,195 @@ jobs:
 
       - name: Verify package contents
         run: npm pack --dry-run
+
+  leeengui-dogfood:
+    if: github.event_name == 'pull_request' && github.head_ref == 'feature/v0.10.0-beta.10-real-project-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LEEENG_BASELINE_SHA: 62b0f430eaf39d2ad1834ebdab89b6718957b0fc
+    steps:
+      - name: Checkout Beta.10 candidate
+        uses: actions/checkout@v4
+        with:
+          path: aiqa
+
+      - name: Checkout pinned LeeEngUI baseline
+        uses: actions/checkout@v4
+        with:
+          repository: lcwihaoei/LeeEngUI
+          ref: ${{ env.LEEENG_BASELINE_SHA }}
+          path: leeeng
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Record exact reproducibility metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dogfood/baseline dogfood/.qa-runs
+          {
+            echo "AIQA_SHA=$(git -C aiqa rev-parse HEAD)"
+            echo "LEEENG_SHA=$(git -C leeeng rev-parse HEAD)"
+            echo "NODE=$(node --version)"
+            echo "NPM=$(npm --version)"
+            echo "OS=$(uname -a)"
+          } | tee dogfood/environment.txt
+          test "$(git -C leeeng rev-parse HEAD)" = "$LEEENG_BASELINE_SHA"
+
+      - name: Install both projects from committed lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd aiqa && npm ci --no-audit --no-fund)
+          (cd leeeng && npm ci --no-audit --no-fund)
+
+      - name: Install real Chromium runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd aiqa && npx playwright install --with-deps chromium)
+          (cd leeeng && npx playwright install chromium)
+
+      - name: Capture LeeEngUI pre-existing strict baseline
+        shell: bash
+        run: |
+          set +e
+          cd leeeng
+          npm run verify:strict 2>&1 | tee ../dogfood/baseline/verify-strict.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../dogfood/baseline/verify-strict-exit-code.txt
+          echo "LeeEngUI baseline exit code: $code"
+          exit 0
+
+      - name: Run Beta.10 against pinned real LeeEngUI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dogfood/routes.txt <<'ROUTES'
+          /
+          /component-test
+          /system-status
+          /not-found
+          /fallback-unknown-route
+          ROUTES
+
+          (
+            cd leeeng
+            npm run dev -- --host 127.0.0.1 > ../dogfood/vite.log 2>&1 &
+            echo $! > ../dogfood/vite.pid
+          )
+          cleanup() {
+            if [ -f dogfood/vite.pid ]; then kill "$(cat dogfood/vite.pid)" >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5173/ >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+          set +e
+          cd aiqa
+          npm run qa -- \
+            --url http://127.0.0.1:5173 \
+            --routes-file "$GITHUB_WORKSPACE/dogfood/routes.txt" \
+            --risk-mode safe \
+            --api-mode off \
+            --device-mode off \
+            --visual-viewports desktop,tablet,mobile \
+            --record-video \
+            --max-actions 300 \
+            --max-depth 8 \
+            --max-candidates-per-page 30 \
+            --no-github-plan \
+            --no-ux-intelligence \
+            --output "$GITHUB_WORKSPACE/dogfood/.qa-runs" \
+            2>&1 | tee "$GITHUB_WORKSPACE/dogfood/qa-output.log"
+          qa_code=${PIPESTATUS[0]}
+          echo "$qa_code" > "$GITHUB_WORKSPACE/dogfood/qa-exit-code.txt"
+          cd "$GITHUB_WORKSPACE"
+          set -e
+          if [ "$qa_code" -ne 0 ] && [ "$qa_code" -ne 2 ]; then
+            echo "AI-QA execution crashed with exit code $qa_code" >&2
+            exit "$qa_code"
+          fi
+
+      - name: Evaluate Beta.10 real-project acceptance contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="$(find dogfood/.qa-runs -type f -name result.json | sort | tail -n 1)"
+          test -n "$RESULT"
+          RESULT="$RESULT" node <<'NODE'
+          const fs = require('fs');
+          const resultPath = process.env.RESULT;
+          const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+          const findings = result.findings || [];
+          const events = result.events || [];
+          const paths = new Set((result.visitedUrls || []).map((value) => new URL(value).pathname));
+          const requiredPaths = ['/', '/component-test', '/system-status', '/not-found', '/fallback-unknown-route'];
+          const missingPaths = requiredPaths.filter((value) => !paths.has(value));
+          const manifestSeedEvents = events.filter((event) => event.details?.routeManifestSeed === true);
+          const visualUi = events.filter((event) => event.kind === 'ui' && event.details?.visual === true);
+          const collapsedPattern = /(app-tab-content|app-menubar-tabs|appMenubar|side-menubar|navbar-brand-text|menu-link)/i;
+          const defectPattern = /(offscreen|unreachable|clipped|overlap|outside viewport)/i;
+          const collapsedSidebarEvents = events.filter((event) => {
+            const haystack = `${event.message || ''} ${event.details?.element || ''} ${event.details?.relatedElement || ''}`;
+            return event.kind === 'ui' && collapsedPattern.test(haystack) && defectPattern.test(haystack);
+          });
+          const counts = findings.reduce((acc, finding) => {
+            acc[finding.severity] = (acc[finding.severity] || 0) + 1;
+            return acc;
+          }, {});
+          const summary = {
+            aiqaRunId: result.runId,
+            visitedUrls: [...paths].sort(),
+            missingRequiredPaths: missingPaths,
+            actions: result.actions,
+            coverage: result.coverage,
+            totalFindings: findings.length,
+            findingCounts: counts,
+            beta9ReferenceFindings: 124,
+            visualUiEvents: visualUi.length,
+            manifestSeedEvents: manifestSeedEvents.length,
+            collapsedSidebarRegressionEvents: collapsedSidebarEvents.map((event) => ({
+              message: event.message,
+              url: event.url,
+              viewport: event.details?.viewport,
+              element: event.details?.element,
+            })),
+            report: result.report,
+          };
+          fs.writeFileSync('dogfood/beta10-dogfood-summary.json', `${JSON.stringify(summary, null, 2)}\n`);
+          console.log(JSON.stringify(summary, null, 2));
+          if (missingPaths.length) {
+            console.error(`Missing required route-manifest coverage: ${missingPaths.join(', ')}`);
+            process.exit(1);
+          }
+          if (manifestSeedEvents.length < 1) {
+            console.error('No route-manifest seeded navigation was recorded.');
+            process.exit(1);
+          }
+          if (collapsedSidebarEvents.length > 0) {
+            console.error(`Collapsed-sidebar regression remains: ${collapsedSidebarEvents.length} event(s).`);
+            process.exit(1);
+          }
+          if (!result.report?.enabled || !result.report?.htmlPath || (result.report?.videos ?? 0) < 3) {
+            console.error('Evidence report/video contract was not satisfied.');
+            process.exit(1);
+          }
+          NODE
+
+      - name: Upload real-project dogfood evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta10-leeengui-dogfood-${{ github.sha }}
+          path: dogfood
+          if-no-files-found: error
+          retention-days: 14
