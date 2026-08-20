@@ -23,6 +23,12 @@ const proposal = z.object({
   beta7Qa: command.optional(),
 });
 
+function redactProbableSecrets(value: string): string {
+  return value
+    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|authorization)\s*[:=]\s*["']?)[^"'\s,;}]+/gi, '$1[REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [REDACTED]');
+}
+
 export class HttpBackendImplementationModel implements BackendImplementationModel {
   constructor(
     private readonly endpoint: string,
@@ -35,6 +41,15 @@ export class HttpBackendImplementationModel implements BackendImplementationMode
   async propose(context: BackendModelContext): Promise<BackendTaskProposalDraft> {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.token) headers.authorization = `Bearer ${this.token}`;
+    const redactedPaths = new Set<string>();
+    const safeContext: BackendModelContext = {
+      ...context,
+      files: context.files.map((file) => {
+        const content = redactProbableSecrets(file.content);
+        if (content !== file.content) redactedPaths.add(file.path);
+        return { ...file, content };
+      }),
+    };
     const response = await fetch(this.endpoint, {
       method: 'POST',
       headers,
@@ -49,14 +64,20 @@ export class HttpBackendImplementationModel implements BackendImplementationMode
           noWorkflowMutation: true,
           exactApprovedScopeOnly: true,
           doNotDeleteMocks: true,
+          doNotDisableSecurityControlsToPassTests: true,
+          redactedSourceIsReadOnly: true,
         },
-        context,
+        context: safeContext,
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!response.ok) throw new Error(`backend implementation model HTTP ${response.status}`);
     const text = await response.text();
     if (text.length > 2_000_000) throw new Error('backend implementation model response exceeded 2 MB');
-    return proposal.parse(JSON.parse(text));
+    const parsed = proposal.parse(JSON.parse(text));
+    const touchingRedacted = parsed.changes.filter((entry) => redactedPaths.has(entry.path)).map((entry) => entry.path);
+    if (touchingRedacted.length > 0) throw new Error(`backend implementation model attempted to rewrite redacted source context: ${touchingRedacted.join(', ')}`);
+    if (parsed.changes.some((entry) => entry.content.includes('[REDACTED]'))) throw new Error('backend implementation model returned a redaction marker inside generated source content');
+    return parsed;
   }
 }
