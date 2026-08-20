@@ -21,7 +21,7 @@ function parseCapabilitiesJson(value: unknown): Record<string, unknown> | undefi
 const program = new Command();
 program
   .name('aiqa')
-  .description('Autonomous browser, visual, API, device and UX QA explorer')
+  .description('Autonomous browser, visual, API, device, UX and evidence-report QA explorer')
   .requiredOption('-u, --url <url>', 'target URL')
   .option('--max-actions <number>', 'maximum browser actions', '40')
   .option('--max-depth <number>', 'maximum crawl depth', '2')
@@ -30,6 +30,8 @@ program
   .option('--visual-viewports <list>', 'comma-separated desktop,tablet,mobile', 'desktop,mobile')
   .option('--visual-baseline <file>', 'visual regression baseline manifest', '.qa-baselines/visual.json')
   .option('--update-visual-baseline', 'replace visual regression baseline with current deterministic signals', false)
+  .option('--record-video', 'record visual QA viewport videos and link them from the HTML evidence report', false)
+  .option('--no-evidence-report', 'disable the offline HTML/JSON/Markdown evidence report')
   .option('--api-mode <mode>', 'off, discover, safe or sandbox', 'safe')
   .option('--max-api-operations <number>', 'maximum OpenAPI operations executed by the API agent', '25')
   .option('--confirm-disposable-target', 'required with --api-mode sandbox', false)
@@ -65,6 +67,7 @@ const schema = z.object({
   url: z.string().url(), maxActions: z.coerce.number().int().min(1).max(1000), maxDepth: z.coerce.number().int().min(0).max(20),
   maxCandidatesPerPage: z.coerce.number().int().min(1).max(100), riskMode: z.enum(['safe', 'standard']),
   visualViewports: z.array(z.enum(['desktop', 'tablet', 'mobile'])).min(1).max(3), visualBaselinePath: z.string().min(1), updateVisualBaseline: z.boolean(),
+  recordVideo: z.boolean(), evidenceReport: z.boolean(),
   apiMode: z.enum(['off', 'discover', 'safe', 'sandbox']), maxApiOperations: z.coerce.number().int().min(1).max(500), confirmDisposableTarget: z.boolean(), semanticState: z.boolean(),
   deviceMode: z.enum(['off', 'smoke', 'explore']), devicePlatform: z.enum(['android', 'ios']).optional(), deviceMaxActions: z.coerce.number().int().min(1).max(50),
   appiumEndpoint: secureEndpoint.optional(), deviceCapabilities: z.unknown().optional(), plannerEndpoint: z.string().url().optional(), plannerToken: z.string().min(1).optional(),
@@ -84,7 +87,9 @@ const schema = z.object({
 
 const options = schema.parse({
   url: raw.url, maxActions: raw.maxActions, maxDepth: raw.maxDepth, maxCandidatesPerPage: raw.maxCandidatesPerPage, riskMode: raw.riskMode,
-  visualViewports, visualBaselinePath: raw.visualBaseline, updateVisualBaseline: raw.updateVisualBaseline, apiMode: raw.apiMode, maxApiOperations: raw.maxApiOperations,
+  visualViewports, visualBaselinePath: raw.visualBaseline, updateVisualBaseline: raw.updateVisualBaseline,
+  recordVideo: raw.recordVideo, evidenceReport: raw.evidenceReport,
+  apiMode: raw.apiMode, maxApiOperations: raw.maxApiOperations,
   confirmDisposableTarget: raw.confirmDisposableTarget, semanticState: raw.semanticState, deviceMode: raw.deviceMode,
   devicePlatform: raw.devicePlatform ?? process.env.AIQA_DEVICE_PLATFORM, deviceMaxActions: raw.maxDeviceActions,
   appiumEndpoint: raw.appiumEndpoint ?? process.env.AIQA_APPIUM_ENDPOINT, deviceCapabilities,
@@ -103,6 +108,7 @@ const result = await new QaManager().run({
   url: options.url, maxActions: options.maxActions, maxDepth: options.maxDepth, maxCandidatesPerPage: options.maxCandidatesPerPage,
   headless: !options.headed, outputDir: options.output, sameOriginOnly: !options.allowCrossOrigin, riskMode: options.riskMode,
   visualViewports: options.visualViewports, visualBaselinePath: options.visualBaselinePath, updateVisualBaseline: options.updateVisualBaseline,
+  recordVideo: options.recordVideo, evidenceReport: options.evidenceReport,
   apiMode: options.apiMode, maxApiOperations: options.maxApiOperations, confirmDisposableTarget: options.confirmDisposableTarget, semanticState: options.semanticState,
   deviceMode: options.deviceMode, devicePlatform: options.devicePlatform, deviceMaxActions: options.deviceMaxActions,
   appiumEndpoint: options.appiumEndpoint, appiumToken: process.env.AIQA_APPIUM_TOKEN, deviceCapabilities: options.deviceCapabilities as Record<string, unknown> | undefined,
@@ -120,6 +126,7 @@ console.log(JSON.stringify({
   visualEvidence: options.visualEndpoint ? 'http-provider' : 'geometry-only',
   visualViewports: options.visualViewports, visualBaseline: result.visualBaseline, api: result.api, correlation: result.correlation,
   semanticState: result.semanticState, device: result.device, githubQa: result.githubQa, controlPlane: result.controlPlane, ux: result.ux, uxLearning: result.uxLearning,
+  report: result.report,
   visited: result.visitedUrls.length, actions: result.actions,
   coverage: { score: result.coverage.score, pageCoverage: result.coverage.pageCoverage, interactionCoverage: result.coverage.interactionCoverage, gaps: result.coverage.gaps.slice(0, 10) },
   findings: result.findings.map(({ id, severity, title, url }) => ({ id, severity, title, url })), outputDir: result.outputDir,

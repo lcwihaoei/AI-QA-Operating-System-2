@@ -1,86 +1,85 @@
-# AI QA Operating System v0.10.0-beta.5
+# AI QA Operating System v0.10.0-beta.7
 
-Field-validation hardening release based on the real LeeEngUI Stage 17 deep QA run against beta.4. This release focuses on QA-engine correctness: MiniMax reliability, visual false-positive reduction, tooling/product-error separation, compiled runtime stability, and explicit baseline/memory migration after classifier changes.
+Evidence-reporting release that turns the reliability work from beta.6 into a portable QA deliverable for engineering, product, UX and release review.
 
-## MiniMax M3 reliability
+## Evidence-rich report bundle
 
-- Default per-attempt timeout is now 45 seconds instead of the beta.4 15-second window.
-- `MINIMAX_TIMEOUT_MS` can tune the timeout (1,000–180,000 ms).
-- Transient network/timeout, HTTP 408/429 and 5xx responses receive up to three bounded retries by default; `MINIMAX_RETRY_ATTEMPTS` supports 1–5 attempts.
-- Non-retryable 4xx responses are not retried.
-- Retry backoff is exponential and capped.
-- Structured response extraction now removes `<think>...</think>` and Markdown fences and finds balanced nested JSON while respecting quoted braces and escapes.
-- MiniMax planner context is reduced to bounded paths, page counters, compact coverage data and at most 60 candidates; raw page body samples are not sent.
-- MiniMax UX reasoning receives aggregate page metrics only, capped to 30 page snapshots and 16 deterministic opportunities.
-- Call telemetry internally tracks attempts, latency and canonical model ID.
+Every normal QA run now produces an offline report bundle under `.qa-runs/<run-id>/report/`:
 
-## Visual QA precision
+- `index.html` — interactive review UI;
+- `report-data.json` — structured report model;
+- `executive-summary.md` — compact handoff summary.
 
-The beta.4 LeeEngUI run showed that many reported visual findings were intentional states rather than product defects. beta.5 changes the deterministic classifier so that:
+The HTML report contains Executive, Product/UX and Engineering views and requires no external JavaScript or stylesheet dependency.
 
-- `.visually-hidden`, `.sr-only`, `.screen-reader-text`, hidden/inert/ARIA-hidden content is excluded from visual clipping/offscreen analysis;
-- closed off-canvas/drawer/sidebar states are excluded unless they are explicitly open;
-- controls below the fold on normal long pages are no longer classified as viewport defects simply because `y > viewport height`;
-- genuinely horizontally unreachable/clipped controls and above-viewport controls remain actionable signals.
+## Screenshot and video evidence
 
-A new real-Chromium regression fixture proves the classifier ignores visually-hidden, closed off-canvas and normal below-fold controls while retaining a genuine horizontal defect.
+- Deterministic visual findings link directly to their captured screenshots.
+- Visual screenshots are captured at viewport size so geometry rectangles can be rendered as issue annotations in the correct location.
+- `--record-video` enables one Playwright recording per requested visual viewport and links recordings from affected findings.
+- Video remains opt-in because it increases evidence size and can contain on-screen product data.
+- `--no-evidence-report` disables the report layer without changing the underlying QA run.
 
-## Product finding hygiene
+## Engineering remediation mapping
 
-- Button probe timeouts and synthetic field/select exercise failures are classified as QA tooling evidence rather than product findings.
-- These tooling failures no longer inflate High severity counts, GitHub issue plans or regression memory.
-- Genuine uncaught browser page errors remain High severity.
+Each finding can now expose:
 
-## Runtime/configuration stability
+- severity, classification, regression status and confidence;
+- expected versus actual behavior;
+- recorded reproduction steps;
+- screenshot/video evidence;
+- bounded root-cause hypothesis;
+- recommended engineering change;
+- regression risk;
+- required regression-test guidance.
 
-- `npm run qa` now builds first and runs `node dist/src/cli.js` instead of executing the QA browser path through `tsx`. This avoids the esbuild/tsx `keepNames` `__name` helper leaking into Playwright browser-evaluated functions.
-- Empty optional `.env` assignments such as `AIQA_VISUAL_ENDPOINT=` and `AIQA_UX_ENDPOINT=""` are treated as unset, preventing URL-schema failures.
-- Existing exported environment variables still take precedence over `.env` values.
+Source attribution has an explicit safety boundary. If a run does not contain confirmed `sourceFile`/`sourceSymbol` metadata, the report displays `SOURCE_NOT_CONFIRMED` rather than inventing a component or file path from a screenshot or selector.
 
-## Baseline and regression-memory migration
+## Product and UX review
 
-The visual classifier and finding population changed materially, so beta.5 does not silently compare against beta.4 state:
+- UX opportunities are presented independently from deterministic product defects.
+- High-impact/high-confidence opportunities are surfaced as quick wins.
+- Executive regression counters summarize visual-baseline and GitHub finding-memory new, persistent and resolved states.
+- Finding filters allow reviewers to focus on severity and regression state without running a report server.
 
-- Visual baseline schema is now version 2 with `analyzerVersion: "dom-geometry-v2"` and mandatory successful `analyzedStates` provenance.
-- beta.4 version-1 visual baselines are treated as untrusted and must be regenerated.
-- GitHub finding regression memory is now version 2 with `fingerprintSchema: "finding-v2"`.
-- beta.4 version-1 GitHub finding memory is not trusted after tooling-finding removal and must be explicitly regenerated.
+## Portability and privacy
 
-Do **not** copy beta.4 `.qa-baselines/visual.json` or `.qa-memory/github-findings.json` into a beta.5 run. Run beta.5 once without accepting a baseline, verify healthy coverage/provenance, then explicitly update the new baseline/memory.
+- Report evidence references are relative to the run directory; machine-specific absolute evidence paths are not written to `report-data.json`.
+- Candidate evidence outside the current run directory is not linked into the report.
+- Dynamic report text is HTML-escaped before rendering.
+- Report generation does not update visual, GitHub or UX baselines and does not create external issues.
+- Existing baseline/memory opt-in safety boundaries remain unchanged.
 
-## Regression coverage added
+## Baseline compatibility
 
-- MiniMax M3 endpoint/model normalization
-- transient retry and non-retryable 4xx behavior
-- nested/fenced/`<think>` JSON extraction
-- MiniMax planner secret/query/body-sample minimization
-- MiniMax aggregate-only UX reasoner path
-- empty optional `.env` endpoints
-- browser tooling-failure exclusion from product findings
-- below-fold vs horizontal offscreen geometry
-- real Chromium visually-hidden/off-canvas/below-fold regression
-- compiled QA runtime entrypoint
-- visual baseline v2 provenance/migration
-- GitHub regression memory v2 migration boundary
+Beta.7 does not change the beta.6 visual classifier or finding fingerprint algorithm. Existing beta.6 reliability boundaries remain in force:
+
+- visual baseline schema 3 / `dom-geometry-v3`;
+- GitHub regression memory classifier `qa-engine-beta6` with `finding-v2` fingerprints.
+
+A beta.7 report can therefore be layered on a healthy beta.6-derived baseline without an automatic migration. Baseline acceptance remains explicit.
 
 ## Verified release gates
 
-The release workflow requires:
+The prerelease workflow requires:
 
-- tracked-file credential/private-key and unresolved-conflict scans;
-- tracked-file 5 MiB ceiling;
+- tracked-file credential/private-key, merge-conflict and 5 MiB safety scans;
 - `npm audit --audit-level=high`;
-- TypeScript build + full Vitest suite;
+- TypeScript build and the full Vitest suite;
 - Playwright Chromium installation;
 - BrowserExplorer breadth/real-click E2E;
-- VisualAgent analysis-provenance E2E;
-- DOM geometry hidden/off-canvas/below-fold real-browser E2E;
+- VisualAgent provenance and real video-finalization E2E;
+- DOM-geometry false-positive/true-positive regression gates;
+- offline evidence-report HTML/JSON/Markdown generation and HTML-escaping/relative-path tests;
+- end-to-end `QaManager` report generation from a real Chromium visual finding, including screenshot and video evidence;
 - `npm pack --dry-run`;
-- tarball creation and SHA-256 checksum.
+- release tarball creation and SHA-256 checksum.
 
 ## Safety posture
 
 - This remains a prerelease.
-- The release is produced from the integration branch; `main` is not modified by the beta.5 hardening flow.
-- UX opportunities remain distinct from deterministic product defects.
-- Baseline/learning writes remain explicit opt-ins.
+- Release creation targets the verified beta.7 integration-branch SHA; `main` remains the review/merge surface.
+- Report presentation never changes the underlying finding classifier.
+- Video capture is explicit opt-in.
+- Source paths are never guessed when source metadata is absent.
+- Baseline/learning writes remain explicit opt-ins and are never silently accepted.

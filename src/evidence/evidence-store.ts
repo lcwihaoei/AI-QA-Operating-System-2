@@ -14,11 +14,12 @@ export class EvidenceStore {
   async init(): Promise<void> {
     await mkdir(this.runDir, { recursive: true });
     await mkdir(path.join(this.runDir, 'screenshots'), { recursive: true });
+    await mkdir(path.join(this.runDir, 'videos'), { recursive: true });
   }
 
-  async screenshot(page: Page, label: string): Promise<string> {
+  async screenshot(page: Page, label: string, fullPage = true): Promise<string> {
     const file = this.nextScreenshotPath(label);
-    await page.screenshot({ path: file, fullPage: true, animations: 'disabled' });
+    await page.screenshot({ path: file, fullPage, animations: 'disabled' });
     return file;
   }
 

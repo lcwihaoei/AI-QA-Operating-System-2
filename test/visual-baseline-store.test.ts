@@ -74,7 +74,7 @@ describe('visual baseline store', () => {
     expect(changed.events[0]?.details?.baselineState).toBe('new');
   });
 
-  it('writes schema v2 analyzer provenance and allows a clean zero-signal baseline only after analysis ran', async () => {
+  it('writes schema v3 analyzer provenance and allows a clean zero-signal baseline only after analysis ran', async () => {
     const { file } = await tempBaseline();
     const store = new VisualBaselineStore(file);
 
@@ -82,10 +82,19 @@ describe('visual baseline store', () => {
     await store.save([], 4);
 
     const manifest = JSON.parse(await readFile(file, 'utf8')) as { version?: number; analyzerVersion?: string; analyzedStates?: number; entries?: unknown[] };
-    expect(manifest.version).toBe(2);
-    expect(manifest.analyzerVersion).toBe('dom-geometry-v2');
+    expect(manifest.version).toBe(3);
+    expect(manifest.analyzerVersion).toBe('dom-geometry-v3');
     expect(manifest.analyzedStates).toBe(4);
     expect(manifest.entries).toEqual([]);
+  });
+
+  it('refuses to trust beta.5 v2 visual baselines after beta.6 classifier changes', async () => {
+    const { file } = await tempBaseline();
+    await writeFile(file, JSON.stringify({ version: 2, analyzerVersion: 'dom-geometry-v2', updatedAt: new Date().toISOString(), analyzedStates: 99, entries: [] }));
+    const comparison = await new VisualBaselineStore(file).compare([visualEvent()]);
+    expect(comparison.summary.existed).toBe(false);
+    expect(comparison.summary.error).toMatch(/beta\.5 visual baseline/i);
+    expect(comparison.events[0]?.details?.baselineState).toBe('untracked');
   });
 
   it('refuses to trust legacy beta.4 visual baselines after classifier changes', async () => {
