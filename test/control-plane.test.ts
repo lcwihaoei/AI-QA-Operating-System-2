@@ -49,6 +49,7 @@ describe('ControlPlaneStore', () => {
 describe('management dashboard shell', () => {
   it('keeps loopback safety while exposing the beta8/beta9 bilingual responsive shell', () => {
     expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('::1')).toBe(true);
     expect(isLoopbackHost('0.0.0.0')).toBe(false);
     const html = dashboardHtml();
     const css = dashboardCss();
@@ -95,9 +96,16 @@ describe('management dashboard shell', () => {
     expect(beta9Js.headers.get('content-type')).toContain('text/javascript');
     const beta9JsText = await beta9Js.text();
     expect(beta9JsText).toContain("fetch('/api/beta9'");
-    expect(beta9JsText).toContain("fetch('/api/beta9/select'");
+    expect(beta9JsText).toContain("'/api/beta9/plan'");
+    expect(beta9JsText).toContain("'/api/beta9/approve'");
+    expect(beta9JsText).toContain("'/api/beta9/execute'");
+    expect(beta9JsText).toContain("'/api/beta9/correlate'");
+    expect(beta9JsText).toContain('AI 修復控制中心');
     const beta9 = await fetch(`http://127.0.0.1:${started.port}/api/beta9`);
     expect(await beta9.json()).toEqual({ available: false });
+    const actionState = await fetch(`http://127.0.0.1:${started.port}/api/beta9/actions`);
+    expect(actionState.status).toBe(200);
+    expect(await actionState.json()).toMatchObject({ available: false, busy: false });
   });
 
   it('exposes only a bounded validated Beta.9 plan summary through the read-only endpoint', async () => {
@@ -165,5 +173,22 @@ describe('management dashboard shell', () => {
       method: 'POST', headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, body: JSON.stringify({ fingerprints: ['f1'] }),
     });
     expect(overwrite.status).toBe(409);
+  });
+
+  it('rejects governed fix actions when --allow-actions is not enabled even if a Beta.9 plan exists', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-dashboard-fix-denied-'));
+    const resultPath = path.join(dir, 'result.json');
+    const planPath = path.join(dir, 'plan.json');
+    const result = qaResult();
+    await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(planPath, `${JSON.stringify(buildBeta9Plan({ result, selectedFingerprints: ['f1'] }), null, 2)}\n`, { mode: 0o600 });
+    const started = await startDashboard(new ControlPlaneStore(path.join(dir, 'state.json')), {
+      host: '127.0.0.1', port: 0, beta7ResultPath: resultPath, beta9PlanPath: planPath, beta9RepoPath: dir, beta9ModelEndpoint: 'http://127.0.0.1:9', allowActions: false,
+    });
+    servers.push(started.server);
+    const response = await fetch(`http://127.0.0.1:${started.port}/api/beta9/plan`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ itemId: 'anything' }),
+    });
+    expect(response.status).toBe(403);
   });
 });
