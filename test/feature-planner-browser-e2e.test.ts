@@ -1,0 +1,53 @@
+import { createServer } from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { afterEach, describe, expect, it } from 'vitest';
+import { ControlPlaneStore } from '../src/control/control-plane.js';
+import { startDashboard } from '../src/control/dashboard-server.js';
+
+const roots: string[] = [];
+const servers: Array<ReturnType<typeof createServer>> = [];
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  while (roots.length > 0) await rm(roots.pop()!, { recursive: true, force: true });
+});
+
+const browserEnabled = process.env.AIQA_BROWSER_E2E === '1';
+
+describe('Product / Feature Planner real-browser dashboard regression', () => {
+  it.runIf(browserEnabled)('renders the bilingual planner on desktop and keeps it reachable in mobile RWD navigation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'aiqa-feature-browser-'));
+    roots.push(root);
+    const started = await startDashboard(new ControlPlaneStore(path.join(root, '.qa-control', 'state.json')), {
+      host: '127.0.0.1', port: 0, featureArtifactRoot: path.join(root, '.qa-features'),
+    });
+    servers.push(started.server);
+    const base = `http://127.0.0.1:${started.port}`;
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      await page.goto(base, { waitUntil: 'networkidle' });
+      const sideFeature = page.locator('.sidebar [data-route="features"]');
+      await expect(sideFeature).toHaveCount(1);
+      await sideFeature.click();
+      await expect(page.locator('#featurePlannerPage')).toHaveClass(/is-active/);
+      await expect(page.locator('#featurePlannerPage h1')).toContainText('Product / Feature Planner');
+      await expect(page.locator('#fpStart')).toBeDisabled();
+
+      await page.locator('.topbar [data-locale="zh-TW"]').click();
+      await expect(page.locator('#featurePlannerPage h1')).toContainText('產品／功能規劃器');
+      await expect(sideFeature.locator('b')).toContainText('功能規劃');
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      const mobileFeature = page.locator('.mobile-nav [data-route="features"]');
+      await expect(mobileFeature).toBeVisible();
+      await mobileFeature.click();
+      await expect(page.locator('#featurePlannerPage')).toHaveClass(/is-active/);
+      await expect(page.locator('#featurePlannerPage .fp-grid').first()).toHaveCSS('grid-template-columns', /[0-9.]+px/);
+    } finally {
+      await browser.close();
+    }
+  }, 35_000);
+});
