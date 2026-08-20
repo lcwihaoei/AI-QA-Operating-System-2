@@ -1,0 +1,29 @@
+{
+  "name": "ai-qa-operating-system",
+  "version": "0.10.0-beta.6",
+  "private": true,
+  "type": "module",
+  "description": "Autonomous QA, fix, control-plane, UX intelligence and self-learning operating system",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "qa": "npm run build --silent && node dist/src/cli.js",
+    "fix": "tsx src/fix-cli.ts",
+    "dashboard": "tsx src/control-cli.ts",
+    "ux:experiment": "tsx src/ux-experiment-cli.ts",
+    "test": "vitest run",
+    "check": "npm run build && npm test"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.55.0",
+    "ajv": "^8.17.1",
+    "commander": "^14.0.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

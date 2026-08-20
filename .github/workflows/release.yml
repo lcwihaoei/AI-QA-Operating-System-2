@@ -1,0 +1,115 @@
+name: Verified Release
+
+on:
+  push:
+    branches:
+      - agent/bootstrap-ai-qa-os
+    paths:
+      - release-manifest.json
+      - RELEASE_NOTES.md
+      - package.json
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verified-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-release:
+    if: github.repository == 'lcwihaoei/AI-QA-Operating-System'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./release-manifest.json').version")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          CHANNEL="$(node -p "require('./release-manifest.json').channel")"
+          test "$VERSION" = "$PACKAGE_VERSION"
+          test "$CHANNEL" = "prerelease"
+          test -n "$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Repository safety scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE '(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{32,})' -- . ':(exclude).github/workflows/release.yml'; then
+            echo 'Potential credential/private-key material detected.' >&2
+            exit 1
+          fi
+          if git grep -nE '^(<<<<<<< |>>>>>>> )' -- .; then
+            echo 'Unresolved merge-conflict marker detected.' >&2
+            exit 1
+          fi
+          bad=0
+          while IFS= read -r -d '' file; do
+            [ -f "$file" ] || continue
+            size="$(wc -c < "$file")"
+            if [ "$size" -gt 5242880 ]; then
+              echo "Tracked file exceeds 5 MiB: $file ($size bytes)" >&2
+              bad=1
+            fi
+          done < <(git ls-files -z)
+          test "$bad" -eq 0
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Dependency vulnerability gate
+        run: npm audit --audit-level=high
+
+      - name: Full build and unit/regression test gate
+        run: npm run check
+
+      - name: Install Chromium for field-regression gate
+        run: npx playwright install --with-deps chromium
+
+      - name: Real browser field-regression gates
+        env:
+          AIQA_BROWSER_E2E: '1'
+        run: npx vitest run test/browser-explorer-e2e.test.ts test/visual-agent-e2e.test.ts test/dom-geometry-browser-regression.test.ts
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Build release artifact and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          npm pack --pack-destination release-artifacts
+          (cd release-artifacts && sha256sum *.tgz > SHA256SUMS.txt)
+          cat release-artifacts/SHA256SUMS.txt
+
+      - name: Create GitHub prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; refusing to replace an existing release."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            release-artifacts/*.tgz \
+            release-artifacts/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "AI QA Operating System $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            --prerelease
