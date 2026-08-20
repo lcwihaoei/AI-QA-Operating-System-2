@@ -4,7 +4,7 @@ import { safeBackendPath, validateBackendVerificationCommand } from '../backend/
 import type { BackendFileChange, BackendVerificationCommand } from '../backend/executor-types.js';
 import { assertWorkPlanSafe, type WorkItem } from '../planning/work-item.js';
 import type { FixSourceFile } from './fix-types.js';
-import { selectedFindingForItem, type Beta9Plan } from './beta9-planner.js';
+import { selectedFindingForItem, type Beta9Plan, type Beta9RetryAuthorization } from './beta9-planner.js';
 
 export interface Beta9FixPlanDraft {
   schemaVersion: 1;
@@ -27,7 +27,8 @@ export interface Beta9FixPlan extends Beta9FixPlanDraft {
 
 export interface Beta9FixModelContext {
   finding: Pick<Finding, 'fingerprint' | 'severity' | 'kind' | 'title' | 'url' | 'message' | 'reproduction' | 'evidence'>;
-  workItem: Pick<WorkItem, 'id' | 'title' | 'goal' | 'why' | 'affectedModules' | 'designRequirements' | 'securityImpact' | 'risks' | 'acceptanceCriteria' | 'requiredTests' | 'qaStrategy'>;
+  workItem: Pick<WorkItem, 'id' | 'title' | 'goal' | 'why' | 'source' | 'affectedModules' | 'implementationPlan' | 'designRequirements' | 'securityImpact' | 'risks' | 'acceptanceCriteria' | 'requiredTests' | 'qaStrategy'>;
+  retryAuthorization?: Pick<Beta9RetryAuthorization, 'previousAttempt' | 'nextAttempt' | 'sourceRunId' | 'postRunId' | 'correlationHash'>;
   files: FixSourceFile[];
 }
 
@@ -140,7 +141,13 @@ export class Beta9FixPlanner {
       if (item.status !== 'planned' || item.approval.approved || item.execution.mutationAllowed) throw new Error('Beta.9 fix planning requires a non-approved planned work item');
       const files = await this.workspace.collectContext(finding, Math.max(1, Math.min(maxContextFiles, 12)));
       if (files.length === 0) throw new Error('no safe source context matched the selected finding');
-      const draft = await this.model.propose({ finding, workItem: item, files });
+      const retryAuthorization = beta9.retryAuthorizations?.[itemId];
+      const draft = await this.model.propose({
+        finding,
+        workItem: item,
+        ...(retryAuthorization ? { retryAuthorization } : {}),
+        files,
+      });
       const plan = finalizeBeta9FixPlan(draft);
       const errors = validateBeta9FixPlan(plan, item, finding);
       if (errors.length > 0) throw new Error(`Beta.9 fix plan rejected: ${errors.join('; ')}`);
