@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approveWorkItem, validateWorkPlan, type WorkItem, type WorkPlan } from '../src/planning/work-item.js';
+import { approveWorkItem, computeWorkItemScopeHash, validateWorkPlan, type WorkItem, type WorkPlan } from '../src/planning/work-item.js';
 import { buildFeatureBlueprint, buildFeaturePlanningSession, validateFeaturePlanningAnswers, type FeaturePlanningAnswer, type ProductOpportunity } from '../src/planning/feature-planner.js';
 
 function execution(mutationAllowed = false) {
@@ -27,12 +27,21 @@ describe('shared work planning domain', () => {
 
   it('approves only after dependencies complete and only with repository-relative paths', () => {
     const p = plan([item('A'), item('B', ['A'])]);
-    expect(() => approveWorkItem(p, 'B', { approvedBy: 'owner', scopeHash: 'hash', allowedPaths: ['src/**'] })).toThrow(/dependencies/);
+    expect(() => approveWorkItem(p, 'B', { approvedBy: 'owner', allowedPaths: ['src/**'] })).toThrow(/dependencies/);
     p.items[0]!.status = 'completed';
-    expect(() => approveWorkItem(p, 'B', { approvedBy: 'owner', scopeHash: 'hash', allowedPaths: ['../escape'] })).toThrow(/bounded/);
-    approveWorkItem(p, 'B', { approvedBy: 'owner', scopeHash: 'hash', allowedPaths: ['src/backend/**'] });
+    expect(() => approveWorkItem(p, 'B', { approvedBy: 'owner', allowedPaths: ['../escape'] })).toThrow(/bounded/);
+    approveWorkItem(p, 'B', { approvedBy: 'owner', allowedPaths: ['src/backend/**'] });
     expect(p.items[1]).toMatchObject({ status: 'approved', approval: { approved: true }, execution: { mutationAllowed: true, allowedPaths: ['src/backend/**'] } });
+    expect(p.items[1]!.approval.scopeHash).toBe(computeWorkItemScopeHash(p.items[1]!, ['src/backend/**']));
     expect(validateWorkPlan(p).valid).toBe(true);
+  });
+
+  it('invalidates approval when the approved task scope changes afterwards', () => {
+    const p = plan([item('A')]);
+    approveWorkItem(p, 'A', { approvedBy: 'owner', allowedPaths: ['src/backend/**'] });
+    expect(validateWorkPlan(p).valid).toBe(true);
+    p.items[0]!.implementationPlan.push('new unreviewed behavior');
+    expect(validateWorkPlan(p).unsafeExecutionGates).toEqual(['A']);
   });
 });
 

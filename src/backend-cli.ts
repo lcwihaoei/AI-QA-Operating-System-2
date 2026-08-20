@@ -2,16 +2,29 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Command } from 'commander';
 import { buildArchitectureInterview, validateArchitectureAnswers, type ArchitectureAnswer, type ArchitectureInterview } from './backend/architecture-interview.js';
+import { BackendTaskExecutor } from './backend/backend-executor.js';
 import { discoverFrontend, type FrontendDiscoveryResult } from './backend/frontend-discovery.js';
-import { buildBackendBlueprint } from './backend/security-blueprint.js';
+import { LocalGitBackendWorkspace } from './backend/local-git-backend-workspace.js';
+import { buildBackendBlueprint, type BackendBlueprint } from './backend/security-blueprint.js';
+import type { BackendImplementationModel, BackendTaskProposal, BackendVerificationCommand } from './backend/executor-types.js';
+import { approveWorkItem, computeWorkItemScopeHash, workPlanFromBackendBlueprint, type WorkPlan } from './planning/work-item.js';
+import { HttpBackendImplementationModel } from './providers/http-backend-model.js';
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(path.resolve(filePath)), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
+async function readJson<T>(filePath: string): Promise<T> {
+  return JSON.parse(await readFile(path.resolve(filePath), 'utf8')) as T;
+}
+
+const unusedModel: BackendImplementationModel = {
+  async propose() { throw new Error('model is not used during execution of an already-generated proposal'); },
+};
+
 const program = new Command();
-program.name('aiqa-backend').description('Beta.8 frontend discovery and backend architecture interview tools');
+program.name('aiqa-backend').description('Beta.8 frontend discovery, architecture planning and approval-bound backend execution');
 
 program.command('discover')
   .requiredOption('--repo <path>', 'frontend repository/project root')
@@ -32,8 +45,8 @@ program.command('validate-interview')
   .requiredOption('--interview <path>', 'architecture-interview.json path')
   .requiredOption('--answers <path>', 'JSON array of architecture answers')
   .action(async (options: { interview: string; answers: string }) => {
-    const interview = JSON.parse(await readFile(options.interview, 'utf8')) as ArchitectureInterview;
-    const answers = JSON.parse(await readFile(options.answers, 'utf8')) as ArchitectureAnswer[];
+    const interview = await readJson<ArchitectureInterview>(options.interview);
+    const answers = await readJson<ArchitectureAnswer[]>(options.answers);
     if (!Array.isArray(answers)) throw new Error('answers file must contain a JSON array');
     const validation = validateArchitectureAnswers(interview, answers);
     process.stdout.write(`${JSON.stringify(validation, null, 2)}\n`);
@@ -46,13 +59,92 @@ program.command('blueprint')
   .requiredOption('--answers <path>', 'confirmed architecture answers JSON array')
   .option('--out <path>', 'blueprint output path', '.qa-backend/backend-blueprint.json')
   .action(async (options: { discovery: string; interview: string; answers: string; out: string }) => {
-    const discovery = JSON.parse(await readFile(options.discovery, 'utf8')) as FrontendDiscoveryResult;
-    const interview = JSON.parse(await readFile(options.interview, 'utf8')) as ArchitectureInterview;
-    const answers = JSON.parse(await readFile(options.answers, 'utf8')) as ArchitectureAnswer[];
+    const discovery = await readJson<FrontendDiscoveryResult>(options.discovery);
+    const interview = await readJson<ArchitectureInterview>(options.interview);
+    const answers = await readJson<ArchitectureAnswer[]>(options.answers);
     if (!Array.isArray(answers)) throw new Error('answers file must contain a JSON array');
     const blueprint = buildBackendBlueprint({ discovery, interview, answers });
     await writeJson(path.resolve(options.out), blueprint);
     process.stdout.write(`Security-first backend blueprint written to ${path.resolve(options.out)}. Execution remains approval-blocked.\n`);
+  });
+
+program.command('work-plan')
+  .requiredOption('--blueprint <path>', 'confirmed backend-blueprint.json path')
+  .option('--out <path>', 'work-plan output path', '.qa-backend/work-plan.json')
+  .action(async (options: { blueprint: string; out: string }) => {
+    const blueprint = await readJson<BackendBlueprint>(options.blueprint);
+    const plan = workPlanFromBackendBlueprint(blueprint);
+    await writeJson(path.resolve(options.out), plan);
+    process.stdout.write(`Approval-blocked work plan written to ${path.resolve(options.out)}.\n`);
+  });
+
+program.command('scope-hash')
+  .requiredOption('--plan <path>', 'work-plan.json path')
+  .requiredOption('--item <id>', 'work item id')
+  .requiredOption('--allow <paths...>', 'repository-relative exact paths or directory/** scopes')
+  .action(async (options: { plan: string; item: string; allow: string[] }) => {
+    const plan = await readJson<WorkPlan>(options.plan);
+    const item = plan.items.find((candidate) => candidate.id === options.item);
+    if (!item) throw new Error(`unknown work item: ${options.item}`);
+    process.stdout.write(`${computeWorkItemScopeHash(item, options.allow)}\n`);
+  });
+
+program.command('approve-task')
+  .requiredOption('--plan <path>', 'work-plan.json path')
+  .requiredOption('--item <id>', 'work item id')
+  .requiredOption('--approved-by <name>', 'human/operator approval identity')
+  .requiredOption('--allow <paths...>', 'repository-relative exact paths or directory/** scopes')
+  .option('--scope-hash <sha256>', 'optional pre-reviewed scope hash; must match exactly')
+  .action(async (options: { plan: string; item: string; approvedBy: string; allow: string[]; scopeHash?: string }) => {
+    const plan = await readJson<WorkPlan>(options.plan);
+    approveWorkItem(plan, options.item, { approvedBy: options.approvedBy, allowedPaths: options.allow, scopeHash: options.scopeHash });
+    await writeJson(path.resolve(options.plan), plan);
+    const approved = plan.items.find((candidate) => candidate.id === options.item)!;
+    process.stdout.write(`Approved ${approved.id} with scope hash ${approved.approval.scopeHash}. No repository mutation has occurred.\n`);
+  });
+
+program.command('propose-task')
+  .requiredOption('--plan <path>', 'approved work-plan.json path')
+  .requiredOption('--item <id>', 'approved work item id')
+  .requiredOption('--repo <path>', 'local target git checkout')
+  .requiredOption('--model-endpoint <url>', 'provider-neutral backend implementation model gateway')
+  .option('--out <path>', 'proposal output path')
+  .action(async (options: { plan: string; item: string; repo: string; modelEndpoint: string; out?: string }) => {
+    const plan = await readJson<WorkPlan>(options.plan);
+    const model = new HttpBackendImplementationModel(options.modelEndpoint, process.env.AIQA_BACKEND_TOKEN);
+    const executor = new BackendTaskExecutor(model, new LocalGitBackendWorkspace(options.repo));
+    const result = await executor.propose(plan, options.item);
+    if (!result.planned || !result.proposal) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    const out = path.resolve(options.out ?? `.qa-backend/proposals/${options.item}.json`);
+    await writeJson(out, result.proposal);
+    process.stdout.write(`Proposal written to ${out}. Review it, then confirm exact proposal hash ${result.proposal.proposalHash} before execution.\n`);
+  });
+
+program.command('execute-task')
+  .requiredOption('--plan <path>', 'approved work-plan.json path')
+  .requiredOption('--item <id>', 'approved work item id')
+  .requiredOption('--repo <path>', 'local target git checkout')
+  .requiredOption('--proposal <path>', 'reviewed proposal JSON path')
+  .requiredOption('--confirm-proposal-hash <sha256>', 'exact reviewed proposal hash')
+  .option('--beta7-command <path>', 'optional JSON verification command controlled by the operator')
+  .option('--attempt <count>', '1-based attempt number', (value) => Number.parseInt(value, 10), 1)
+  .option('--confirm-write', 'required acknowledgement before target repository mutation', false)
+  .option('--result-out <path>', 'execution result output path')
+  .action(async (options: { plan: string; item: string; repo: string; proposal: string; confirmProposalHash: string; beta7Command?: string; attempt: number; confirmWrite: boolean; resultOut?: string }) => {
+    if (options.confirmWrite !== true) throw new Error('execute-task requires --confirm-write');
+    const plan = await readJson<WorkPlan>(options.plan);
+    const proposal = await readJson<BackendTaskProposal>(options.proposal);
+    const beta7Qa = options.beta7Command ? await readJson<BackendVerificationCommand>(options.beta7Command) : undefined;
+    const executor = new BackendTaskExecutor(unusedModel, new LocalGitBackendWorkspace(options.repo));
+    const result = await executor.execute(plan, options.item, proposal, { confirmProposalHash: options.confirmProposalHash, attempt: options.attempt, beta7Qa });
+    await writeJson(path.resolve(options.plan), plan);
+    if (options.resultOut) await writeJson(path.resolve(options.resultOut), result);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (!result.verified) process.exitCode = 2;
   });
 
 await program.parseAsync(process.argv);
