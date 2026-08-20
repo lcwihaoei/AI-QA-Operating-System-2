@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { BackendBlueprint } from '../backend/security-blueprint.js';
 
 export type WorkItemKind =
@@ -89,6 +90,54 @@ export interface WorkPlanValidation {
   unsafeExecutionGates: string[];
 }
 
+const DENIED_APPROVAL_PATH = /(^|\/)(?:\.git|\.github\/workflows|\.env(?:\.|$)|secrets?|credentials?|private[-_]?keys?|id_rsa|id_ed25519|\.ssh|\.aws|\.gnupg)(\/|$)/i;
+
+function validAllowedPattern(value: string): boolean {
+  if (!value || value.length > 500 || value.includes('\\') || value.startsWith('/') || value.split('/').includes('..')) return false;
+  const wildcardCount = (value.match(/\*/g) ?? []).length;
+  if (wildcardCount > 0 && !value.endsWith('/**')) return false;
+  const base = value.endsWith('/**') ? value.slice(0, -3).replace(/\/$/, '') : value;
+  if (!base || DENIED_APPROVAL_PATH.test(base)) return false;
+  return /^[A-Za-z0-9._/@+ -]+(?:\/[A-Za-z0-9._/@+ -]+)*$/.test(base);
+}
+
+function stableUnique(values: string[]): string[] {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+export function computeWorkItemScopeHash(item: WorkItem, allowedPaths: string[]): string {
+  const payload = {
+    version: 1,
+    id: item.id,
+    kind: item.kind,
+    title: item.title,
+    goal: item.goal,
+    why: item.why,
+    priority: item.priority,
+    dependencies: stableUnique(item.dependencies),
+    affectedModules: stableUnique(item.affectedModules),
+    affectedFiles: stableUnique(item.affectedFiles),
+    designRequirements: [...item.designRequirements],
+    implementationPlan: [...item.implementationPlan],
+    securityImpact: [...item.securityImpact],
+    risks: [...item.risks],
+    acceptanceCriteria: [...item.acceptanceCriteria],
+    requiredTests: [...item.requiredTests],
+    qaStrategy: [...item.qaStrategy],
+    execution: {
+      allowedPaths: stableUnique(allowedPaths),
+      forbiddenPaths: stableUnique(item.execution.forbiddenPaths),
+      maxAttempts: item.execution.maxAttempts,
+      requireCleanWorkspace: item.execution.requireCleanWorkspace,
+      requireIsolatedBranch: item.execution.requireIsolatedBranch,
+      requireTargetedTests: item.execution.requireTargetedTests,
+      requireRegressionTests: item.execution.requireRegressionTests,
+      requireBeta7Qa: item.execution.requireBeta7Qa,
+    },
+  };
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
 function findCycles(items: WorkItem[]): string[][] {
   const byId = new Map(items.map((item) => [item.id, item]));
   const visiting = new Set<string>();
@@ -132,7 +181,9 @@ export function validateWorkPlan(plan: WorkPlan): WorkPlanValidation {
   const invalidConfidence = plan.items.filter((item) => !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1).map((item) => item.id);
   const unsafeExecutionGates = plan.items.filter((item) => {
     if (!item.execution.mutationAllowed) return false;
-    return !item.approval.required || !item.approval.approved || !item.execution.requireCleanWorkspace || !item.execution.requireIsolatedBranch;
+    if (!item.approval.required || !item.approval.approved || !item.execution.requireCleanWorkspace || !item.execution.requireIsolatedBranch) return true;
+    if (!item.approval.scopeHash || item.execution.allowedPaths.length === 0 || item.execution.allowedPaths.some((value) => !validAllowedPattern(value))) return true;
+    return item.approval.scopeHash !== computeWorkItemScopeHash(item, item.execution.allowedPaths);
   }).map((item) => item.id);
   const cycles = findCycles(plan.items);
   return {
@@ -200,17 +251,20 @@ export function workPlanFromBackendBlueprint(blueprint: BackendBlueprint): WorkP
   return plan;
 }
 
-export function approveWorkItem(plan: WorkPlan, itemId: string, input: { approvedBy: string; scopeHash: string; allowedPaths: string[] }): WorkPlan {
+export function approveWorkItem(plan: WorkPlan, itemId: string, input: { approvedBy: string; scopeHash?: string; allowedPaths: string[] }): WorkPlan {
   const item = plan.items.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error(`unknown work item: ${itemId}`);
   const incompleteDependencies = item.dependencies.filter((dependency) => plan.items.find((candidate) => candidate.id === dependency)?.status !== 'completed');
   if (incompleteDependencies.length > 0) throw new Error(`work item dependencies are not completed: ${incompleteDependencies.join(', ')}`);
-  if (!input.approvedBy.trim() || !input.scopeHash.trim()) throw new Error('approval requires approvedBy and scopeHash');
-  if (input.allowedPaths.length === 0 || input.allowedPaths.some((value) => !value.trim() || value.startsWith('/') || value.includes('..'))) throw new Error('approval requires bounded repository-relative allowed paths');
+  if (!input.approvedBy.trim()) throw new Error('approval requires approvedBy');
+  const allowedPaths = stableUnique(input.allowedPaths.map((value) => value.trim()));
+  if (allowedPaths.length === 0 || allowedPaths.some((value) => !validAllowedPattern(value))) throw new Error('approval requires bounded repository-relative allowed paths');
 
+  const scopeHash = computeWorkItemScopeHash(item, allowedPaths);
+  if (input.scopeHash && input.scopeHash.trim() !== scopeHash) throw new Error(`approval scope hash mismatch; expected ${scopeHash}`);
   item.status = 'approved';
-  item.approval = { required: true, approved: true, approvedBy: input.approvedBy.trim(), approvedAt: new Date().toISOString(), scopeHash: input.scopeHash.trim() };
-  item.execution = { ...item.execution, mutationAllowed: true, allowedPaths: [...new Set(input.allowedPaths)] };
+  item.approval = { required: true, approved: true, approvedBy: input.approvedBy.trim(), approvedAt: new Date().toISOString(), scopeHash };
+  item.execution = { ...item.execution, mutationAllowed: true, allowedPaths };
   assertWorkPlanSafe(plan);
   return plan;
 }
