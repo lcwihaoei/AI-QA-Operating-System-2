@@ -51,4 +51,34 @@ describe.skipIf(!enabled)('DOM geometry real-browser false-positive regressions'
       await browser.close();
     }
   });
+
+  it('suppresses only the displaced content of an aria-collapsed controlled sidebar', async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+      await page.setContent(`<!doctype html><html><head><style>
+        body { margin: 0; }
+        #appMenubar { position: fixed; left: 0; top: 0; width: 80px; height: 600px; }
+        #visible-rail { position: absolute; left: 16px; top: 20px; width: 44px; height: 44px; }
+        .app-tab-content { position: absolute; left: -160px; top: 0; width: 160px; height: 600px; }
+        #tucked-link { position: absolute; left: 12px; top: 90px; width: 130px; height: 36px; }
+        #real-visible-defect { position: fixed; left: 850px; top: 180px; width: 120px; height: 40px; }
+      </style></head><body>
+        <button id="sidebar-toggle" aria-controls="appMenubar" aria-expanded="false">Toggle menu</button>
+        <aside id="appMenubar">
+          <button id="visible-rail">Visible rail control</button>
+          <div class="app-tab-content"><a id="tucked-link" href="/hidden-route">Tucked drawer content</a></div>
+        </aside>
+        <button id="real-visible-defect">Actually clipped visible action</button>
+      </body></html>`);
+
+      const signals = await new DomGeometryAnalyzer().analyze(page);
+      const messages = signals.map((signal) => signal.message).join('\n');
+      expect(messages).not.toContain('Tucked drawer content');
+      expect(messages).not.toContain('Visible rail control');
+      expect(messages).toContain('Actually clipped visible action');
+    } finally {
+      await browser.close();
+    }
+  });
 });
