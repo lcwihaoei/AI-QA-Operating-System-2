@@ -38,6 +38,8 @@ describe('Product / Feature Planner real-browser dashboard regression', () => {
 
       await page.locator('.topbar [data-locale="zh-TW"]').click();
       await page.waitForFunction(() => document.documentElement.lang === 'zh-TW');
+      await page.waitForFunction(() => document.querySelector('#featurePlannerPage h1')?.textContent?.includes('產品／功能規劃器'));
+      await page.waitForFunction(() => document.querySelector('.sidebar [data-route="features"] b')?.textContent?.includes('功能規劃'));
       expect(await page.locator('#featurePlannerPage h1').textContent()).toContain('產品／功能規劃器');
       expect(await sideFeature.locator('b').textContent()).toContain('功能規劃');
 
