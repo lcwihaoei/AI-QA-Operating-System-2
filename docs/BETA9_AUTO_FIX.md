@@ -1,6 +1,6 @@
 # Beta.9 — Controlled AI Auto-Fix
 
-Beta.9 closes the loop from a Beta.7 evidence-rich QA report to a reviewed, bounded source change and a fresh Beta.7 verification result. It deliberately separates **selection**, **planning**, **approval**, **execution**, **post-QA correlation**, and **retry authorization** so a model cannot turn a finding into repository mutation by itself.
+Beta.9 closes the loop from a Beta.7 evidence-rich QA report to a reviewed, bounded source change and a fresh Beta.7 verification result. Selection, planning, approval, execution, post-QA correlation and retry authorization are separate gates so a model cannot turn a finding into repository mutation by itself.
 
 ## 1. Explicit finding selection
 
@@ -14,35 +14,9 @@ npm run beta9 -- select \
   --out .qa-beta9/plan.json
 ```
 
-Only selected findings become WorkItems. Every generated WorkItem starts with `mutationAllowed=false` and `approval.approved=false`.
+Only selected findings become WorkItems. Every WorkItem starts with `mutationAllowed=false` and `approval.approved=false`. Selection plans are created immutably; an existing Beta.9 plan is never silently overwritten.
 
-Selection plans are created immutably. The CLI refuses to silently overwrite an existing Beta.9 plan because it may already contain reviewed plans, approvals, correlations, or retry state.
-
-### Optional dashboard-assisted selection
-
-The management dashboard can expose a bounded Beta.7 finding list without exposing raw messages, reproduction steps, or evidence paths:
-
-```bash
-npm run dashboard -- \
-  --beta7-result .qa-runs/<run-id>/result.json \
-  --beta9-plan .qa-beta9/plan.json
-```
-
-This mode is read-only by default. To allow the dashboard to create the initial Beta.9 selection plan, the operator must explicitly start a **loopback-only** action mode:
-
-```bash
-npm run dashboard -- \
-  --host 127.0.0.1 \
-  --beta7-result .qa-runs/<run-id>/result.json \
-  --beta9-plan .qa-beta9/plan.json \
-  --allow-actions
-```
-
-`--allow-actions` currently authorizes only creation of a new finding-selection plan. It does **not** authorize source-code mutation, approval, execution, commit, push, or merge. Remote dashboard binding cannot enable this action mode. The POST endpoint requires JSON and rejects browser requests identified as cross-site. Existing Beta.9 plans are never overwritten by dashboard selection.
-
-## 2. AI fix plan — still read-only
-
-The planning phase searches a bounded set of tracked source files using the selected finding's evidence and sends only that bounded context to the configured fix-plan model:
+## 2. AI fix plan — read-only until approval
 
 ```bash
 AIQA_BETA9_TOKEN=... npm run beta9 -- plan-fix \
@@ -52,19 +26,17 @@ AIQA_BETA9_TOKEN=... npm run beta9 -- plan-fix \
   --model-endpoint https://fix-model-gateway.example/plan
 ```
 
-The result contains root cause, recommended change, regression risks, confidence, exact create/replace operations, targeted tests, regression verification, a Beta.7 QA command, and a deterministic `planHash` over the complete reviewed plan.
+The reviewed artifact contains root cause, recommended changes, regression risks, confidence, exact create/replace operations, targeted tests, regression verification, a Beta.7 QA command and a deterministic `planHash`.
 
-Planning is not permission to write. The WorkItem is enriched with the proposed affected files, implementation steps, risks and tests, but remains non-mutating.
-
-Fix-plan artifacts are immutable. The default filename includes the WorkItem, attempt number and plan-hash prefix, for example:
+Planning is not permission to write. Fix-plan artifacts are immutable and attempt-specific, for example:
 
 ```text
 .qa-beta9/fix-plans/B9-FIX-...-attempt-1-<plan-hash-prefix>.json
 ```
 
-A retry therefore creates a new reviewed artifact rather than overwriting the prior plan used by an immutable attempt record.
+A retry creates a new plan instead of modifying the artifact used by a previous immutable attempt record.
 
-## 3. Human approval binds the exact reviewed plan to repository scope
+## 3. Human approval binds the reviewed plan to source scope
 
 ```bash
 npm run beta9 -- approve-fix \
@@ -76,7 +48,9 @@ npm run beta9 -- approve-fix \
   --allow src/components/** test/**
 ```
 
-The shared WorkItem system computes a separate scope hash over the task definition and allowed paths. Editing the task after approval makes the scope hash stale. Approval fails when the reviewed code changes are not fully covered by the approved path scope.
+The shared WorkItem system computes a separate scope hash. Editing the WorkItem after approval invalidates that approval. The reviewed code changes must all be covered by the allowed repository-relative paths.
+
+The management dashboard is stricter: dashboard approval derives the allowed path list from the exact reviewed change files and does not let the browser submit an arbitrary broad path scope.
 
 ## 4. Controlled execution
 
@@ -93,25 +67,22 @@ npm run beta9 -- execute-fix \
 
 Safety properties:
 
-- refuses to start from `main`, `master`, or `trunk`;
+- refuses `main`, `master` and `trunk` as execution starting branches;
 - requires a clean checkout;
 - creates an isolated `aiqa/fix/<work-item>` branch;
-- supports only bounded create/replace operations;
-- never writes outside approved WorkItem paths;
+- supports bounded create/replace operations only;
 - denies Git internals, workflow files, env/credential/key material and lockfiles;
-- replacement writes require the exact SHA-256 of the source reviewed during planning;
+- replacement writes require the exact SHA-256 reviewed during planning;
 - verification commands are restricted to test/check/lint/type/build/verify/QA tooling;
-- targeted tests run first, then regression verification, then Beta.7 QA;
-- mutation/verification failures roll back and mark the WorkItem blocked;
-- successful source changes remain uncommitted on the isolated branch;
+- targeted tests run before broader regression and Beta.7 QA;
+- mutation/verification failure rolls back and marks the item blocked;
+- successful source changes remain uncommitted on the isolated branch for review;
 - every attempt emits an immutable attempt record;
-- each WorkItem has a bounded attempt budget (default 3).
+- every WorkItem has a bounded attempt budget, default 3.
 
-A successful Beta.7 command exit code does **not** mark the WorkItem complete. It moves to `verification` and the attempt outcome becomes `awaiting-correlation` until a fresh Beta.7 result is compared with the original run.
+A successful Beta.7 command exit code does **not** mean the defect is fixed. The item enters `verification` and the attempt becomes `awaiting-correlation` until a fresh Beta.7 result is compared with the source result.
 
 ## 5. Post-QA correlation
-
-After the execution's Beta.7 command produces a new `result.json`, correlate the exact attempt against both the source and fresh reports:
 
 ```bash
 npm run beta9 -- correlate \
@@ -124,26 +95,18 @@ npm run beta9 -- correlate \
 
 Correlation is conservative:
 
-- `persistent` — exact selected fingerprint remains;
-- `persistent-equivalent` — fingerprint changed, but one same-kind/same-route/same-title finding remains;
-- `resolved` — exact fingerprint and equivalent finding are both absent;
-- `inconclusive` — multiple equivalent findings prevent safe automatic classification.
+- `persistent` — exact fingerprint remains;
+- `persistent-equivalent` — fingerprint changed but one same-kind/same-route/same-title finding remains;
+- `resolved` — exact fingerprint and an equivalent finding are both absent;
+- `inconclusive` — multiple equivalent findings prevent a safe automatic conclusion.
 
-The report also counts findings newly introduced after the attempt. A new critical/high finding blocks automatic retry. The correlation report has its own deterministic `correlationHash` and is written immutably.
+New findings are counted. A new critical/high finding blocks automatic retry. The correlation artifact is immutable and has its own deterministic `correlationHash`.
 
 Only `resolved` with no new critical/high regression marks the WorkItem `completed`.
 
 ## 6. Bounded retry authorization
 
-A retry is permitted only when all of these are true:
-
-- the previous immutable attempt record exists and matches the correlation;
-- the fresh Beta.7 result still shows the selected finding as `persistent` or `persistent-equivalent`;
-- no new critical/high regression appeared;
-- the previous attempt is inside the WorkItem attempt budget;
-- the previous attempt outcome is eligible for correlation/retry.
-
-Prepare the retry:
+A retry requires the previous immutable attempt, the fresh correlation, a still-persistent selected finding, no new critical/high regression and remaining attempt budget.
 
 ```bash
 npm run beta9 -- prepare-retry \
@@ -153,19 +116,18 @@ npm run beta9 -- prepare-retry \
   --repo /path/to/target
 ```
 
-If the previous attempt left successful-but-unresolved uncommitted changes on its isolated branch, `prepare-retry` requires that exact execution branch to be checked out and rolls it back to the recorded original branch before authorizing a new attempt. This prevents retries from silently stacking unreviewed partial fixes.
+If a successful-but-unresolved attempt left uncommitted changes on its isolated branch, retry preparation requires that exact execution branch and rolls those changes back to the recorded original branch. Partial fixes are never silently stacked.
 
-The retry authorization:
+Retry preparation:
 
-- is bound to the WorkItem, selected finding, source run, fresh post run, prior attempt number and correlation hash;
+- binds authorization to the WorkItem, finding, source run, fresh post run, previous attempt and correlation hash;
 - authorizes exactly `previousAttempt + 1`;
 - resets the WorkItem to non-mutating `planned` state;
-- clears the previous allowed path scope and approval;
-- requires a completely new immutable fix plan and a new human scope approval.
+- clears prior approval and allowed paths;
+- requires a completely new immutable fix plan and a new approval;
+- passes the fresh post-QA context into retry planning so the provider is explicitly told not to repeat the prior approach without new evidence.
 
-Retry planning receives the fresh post-QA authorization context, including prior/next attempt, source/post run and correlation hash. The provider is explicitly instructed not to repeat the prior failed approach without new evidence.
-
-Attempt 2+ execution must also confirm the exact retry authorization hash:
+Attempt 2+ must confirm the exact retry authorization hash:
 
 ```bash
 npm run beta9 -- execute-fix \
@@ -179,7 +141,64 @@ npm run beta9 -- execute-fix \
   --confirm-write
 ```
 
-The authorization is consumed when the retry begins. Attempt numbers above 1 cannot bypass this gate.
+The authorization is consumed when the retry begins. An attempt above 1 cannot bypass this gate.
+
+## 7. Governed management-dashboard workflow
+
+The dashboard can now drive the same gated lifecycle. It remains read-only unless `--allow-actions` is explicitly enabled on a loopback bind.
+
+Read-only evidence/review mode:
+
+```bash
+npm run dashboard -- \
+  --host 127.0.0.1 \
+  --beta7-result .qa-runs/<source-run>/result.json \
+  --beta9-plan .qa-beta9/plan.json
+```
+
+Full governed local action mode:
+
+```bash
+AIQA_BETA9_TOKEN=... npm run dashboard -- \
+  --host 127.0.0.1 \
+  --beta7-result .qa-runs/<source-run>/result.json \
+  --beta9-plan .qa-beta9/plan.json \
+  --beta9-repo /path/to/target \
+  --beta9-model-endpoint https://fix-model-gateway.example/plan \
+  --beta9-post-result .qa-runs/<fresh-post-run>/result.json \
+  --beta9-artifacts .qa-beta9 \
+  --allow-actions
+```
+
+The Beta.9 page exposes the controlled sequence:
+
+```text
+Select findings
+  → Generate fix plan
+  → Review root cause / exact files / risk / tests / plan hash
+  → Approve exact reviewed files
+  → Confirm exact plan-hash suffix
+  → Execute on isolated branch
+  → Targeted tests / regression / Beta.7
+  → Correlate fresh Beta.7 result
+  → Completed OR prepare bounded retry
+  → New plan + new approval for retry
+```
+
+Dashboard security boundaries:
+
+- action mode is loopback-only even if remote read access has a bearer token;
+- the request Host must itself be a loopback host, reducing DNS-rebinding exposure;
+- cross-site requests are rejected and an Origin, when present, must match the dashboard Host;
+- POST actions require JSON and have a bounded request-body size;
+- repository path, model endpoint, source/post-result paths, artifact directory and model token are server startup configuration and cannot be supplied by browser requests;
+- the browser never receives generated source-file contents from the fix plan;
+- approval uses exact reviewed changed-file paths;
+- execution requires an additional explicit confirmation based on the reviewed plan hash;
+- fix plans, attempts, correlations and retry authorizations remain immutable artifacts;
+- the dashboard still cannot commit, push or merge the target repository.
+
+The dashboard supports `繁體 | English`, System/Light/Dark theme behavior and the existing responsive shell. Changing display language never changes the underlying approval hashes or execution policy.
 
 ## Closed-loop state machine
 
@@ -188,7 +207,7 @@ Beta.7 finding
   → explicit selection
   → AI diagnosis/fix plan
   → human review
-  → WorkItem scope approval
+  → exact source-scope approval
   → exact plan-hash confirmation
   → isolated mutation
   → targeted tests
@@ -202,4 +221,4 @@ Beta.7 finding
        └─ inconclusive / attempt budget exhausted → blocked
 ```
 
-There is no infinite autonomous repair loop. Every new fix plan requires separate review/approval, every retry is tied to fresh QA evidence, and the maximum attempt budget remains enforced.
+There is no infinite autonomous repair loop. Every changed fix plan requires separate review/approval, every retry is tied to fresh QA evidence, and the bounded attempt budget remains enforced.
