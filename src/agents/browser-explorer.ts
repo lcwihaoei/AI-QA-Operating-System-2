@@ -14,6 +14,7 @@ type QueueItem = {
   url: string;
   depth: number;
   source?: { pageUrl: string; candidateId: string };
+  seed?: 'route-manifest';
 };
 
 export interface BrowserExplorationResult {
@@ -41,10 +42,30 @@ export class BrowserExplorer {
     const events: QaEvent[] = [];
     const visited = new Set<string>();
     const uxSnapshots = new Map<string, UxPageSnapshot>();
-    const queued: QueueItem[] = [{ url: this.normalizeUrl(options.url), depth: 0 }];
+    const startUrl = this.normalizeUrl(options.url);
+    const origin = new URL(startUrl).origin;
+    const routeSeeds = [...new Set(
+      (options.routeSeeds ?? [])
+        .slice(0, 200)
+        .map((seed) => this.normalizeNavigableUrl(seed, startUrl))
+        .filter((seed): seed is string => Boolean(seed))
+        .filter((seed) => seed !== startUrl)
+        .filter((seed) => !options.sameOriginOnly || new URL(seed).origin === origin),
+    )];
+    const queued: QueueItem[] = [
+      { url: startUrl, depth: 0 },
+      ...routeSeeds.map((url) => ({ url, depth: 0, seed: 'route-manifest' as const })),
+    ];
     let actions = 0;
 
-    this.coverage.discoverPage(this.normalizeUrl(options.url), 0);
+    this.coverage.discoverPage(startUrl, 0);
+    for (const seed of routeSeeds) this.coverage.discoverPage(seed, 0);
+    if (routeSeeds.length > 0) {
+      events.push(this.event('planner', startUrl, `Seeded ${routeSeeds.length} explicit route(s) from manifest`, {
+        routeManifest: true,
+        seededRoutes: routeSeeds.length,
+      }));
+    }
 
     try {
       browser = await chromium.launch({ headless: options.headless });
@@ -54,7 +75,6 @@ export class BrowserExplorer {
       });
       const page = await context.newPage();
       this.attachObservers(page, events);
-      const origin = new URL(options.url).origin;
 
       while (queued.length && actions < options.maxActions) {
         const item = queued.shift()!;
@@ -74,7 +94,11 @@ export class BrowserExplorer {
         if (item.source && response) this.coverage.markCandidateExercised(item.source.pageUrl, item.source.candidateId);
         if (!response || response.status() >= 400) this.coverage.markPageError(actualUrl);
 
-        events.push(this.event('action', actualUrl, `Navigate to ${item.url}`, { status: response?.status(), depth: item.depth }));
+        events.push(this.event('action', actualUrl, `Navigate to ${item.url}`, {
+          status: response?.status(),
+          depth: item.depth,
+          routeManifestSeed: item.seed === 'route-manifest',
+        }));
         await page.waitForTimeout(180);
         await this.detectUiSignals(page, events);
         const shot = await this.evidence.screenshot(page, `page-${visited.size}`);
