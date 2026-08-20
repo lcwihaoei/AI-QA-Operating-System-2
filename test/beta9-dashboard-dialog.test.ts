@@ -9,7 +9,7 @@ describe('Beta.9 governed dashboard review dialogs', () => {
     expect(js).toContain('Approve exact reviewed source scope');
     expect(js).toContain('Confirm bounded source mutation');
     expect(js).toContain('Correlate fresh Beta.7 evidence');
-    expect(js).toContain("fetch('/api/beta9/select'");
+    expect(js).toContain("post('/api/beta9/select'");
     expect(js).not.toContain('window.prompt');
     expect(js).not.toContain('window.confirm');
     expect(js).not.toContain('window.alert');
