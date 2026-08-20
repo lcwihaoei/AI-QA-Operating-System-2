@@ -108,6 +108,7 @@ describe('Product / Feature Planner dashboard HTTP workflow', () => {
     expect(jsText).toContain('Product / Feature Planner');
     expect(jsText).toContain('產品／功能規劃器');
     expect(jsText).toContain('/api/features/blueprint');
+    expect(() => new Function(jsText)).not.toThrow();
     const css = await fetch(`${base}/feature-planner-dashboard.css`);
     expect(css.status).toBe(200);
     expect(await css.text()).toContain('#featurePlannerPage');
