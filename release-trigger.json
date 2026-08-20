@@ -3,6 +3,7 @@
   "action": "publish-prerelease",
   "approved": true,
   "requestedAt": "2026-08-20T19:39:00+08:00",
+  "attempt": 2,
   "safety": {
     "merge": false,
     "deploy": false,
