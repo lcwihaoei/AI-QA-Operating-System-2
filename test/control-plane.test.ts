@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ControlPlaneStore } from '../src/control/control-plane.js';
-import { dashboardHtml, isLoopbackHost, startDashboard } from '../src/control/dashboard-server.js';
+import { dashboardCss, dashboardHtml, dashboardJs, isLoopbackHost, startDashboard } from '../src/control/dashboard-server.js';
 import type { QaRunResult } from '../src/core/types.js';
 
 const servers: Array<{ close(cb: () => void): void }> = [];
@@ -45,15 +45,47 @@ describe('ControlPlaneStore', () => {
   });
 });
 
-describe('dashboard', () => {
-  it('is loopback-safe and has a read-only UI', () => {
+describe('management dashboard shell', () => {
+  it('keeps loopback safety while exposing the beta8/beta9 bilingual responsive shell', () => {
     expect(isLoopbackHost('127.0.0.1')).toBe(true);
     expect(isLoopbackHost('0.0.0.0')).toBe(false);
-    expect(dashboardHtml()).toContain('Read-only operational view');
+    const html = dashboardHtml();
+    const css = dashboardCss();
+    const js = dashboardJs();
+    expect(html).toContain('AI QA Operating System');
+    expect(html).toContain('data-locale="zh-TW"');
+    expect(html).toContain('data-locale="en"');
+    expect(html).toContain('data-page="beta8"');
+    expect(html).toContain('data-page="beta9"');
+    expect(html).toContain('/dashboard.css');
+    expect(html).toContain('/dashboard.js');
+    expect(css).toContain('prefers-color-scheme:dark');
+    expect(css).toContain('@media(max-width:900px)');
+    expect(js).toContain("'zh-TW'");
+    expect(js).toContain('aiqa.dashboard.theme');
+    expect(js).toContain('aiqa.dashboard.locale');
+    expect(js).toContain("return lang.indexOf('zh-tw')===0");
   });
 
   it('requires a token for remote binding before opening a socket', async () => {
     const store = new ControlPlaneStore('/tmp/does-not-matter.json');
     await expect(startDashboard(store, { host: '0.0.0.0', port: 0 })).rejects.toThrow(/token/);
+  });
+
+  it('serves external dashboard assets under a CSP without unsafe-inline', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-dashboard-'));
+    const store = new ControlPlaneStore(path.join(dir, 'state.json'));
+    const started = await startDashboard(store, { host: '127.0.0.1', port: 0 });
+    servers.push(started.server);
+    const root = await fetch(`http://127.0.0.1:${started.port}/`);
+    expect(root.status).toBe(200);
+    expect(root.headers.get('content-security-policy')).not.toContain('unsafe-inline');
+    expect(await root.text()).toContain('AI QA Operating System');
+    const css = await fetch(`http://127.0.0.1:${started.port}/dashboard.css`);
+    expect(css.headers.get('content-type')).toContain('text/css');
+    expect(await css.text()).toContain('.mobile-nav');
+    const js = await fetch(`http://127.0.0.1:${started.port}/dashboard.js`);
+    expect(js.headers.get('content-type')).toContain('text/javascript');
+    expect(await js.text()).toContain('function setLocale');
   });
 });
