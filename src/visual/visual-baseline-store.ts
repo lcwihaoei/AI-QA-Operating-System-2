@@ -16,8 +16,8 @@ export interface VisualBaselineEntry {
 }
 
 interface VisualBaselineFile {
-  version: 2;
-  analyzerVersion: 'dom-geometry-v2';
+  version: 3;
+  analyzerVersion: 'dom-geometry-v3';
   updatedAt: string;
   analyzedStates: number;
   entries: VisualBaselineEntry[];
@@ -32,7 +32,7 @@ export interface VisualBaselineComparison {
 
 const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
 const HEX_ID_LIKE = /^[0-9a-f]{16,}$/i;
-const ANALYZER_VERSION = 'dom-geometry-v2' as const;
+const ANALYZER_VERSION = 'dom-geometry-v3' as const;
 
 function normalizeDynamicText(value: string): string {
   return value
@@ -141,7 +141,7 @@ export class VisualBaselineStore {
       details: {
         visualBaseline: true,
         ...summary,
-        baselineSchemaVersion: 2,
+        baselineSchemaVersion: 3,
         baselineAnalyzerVersion: loaded.analyzerVersion,
         baselineAnalyzedStates: loaded.analyzedStates,
         resolved: resolved.slice(0, 50),
@@ -158,7 +158,7 @@ export class VisualBaselineStore {
     const unique = [...new Map(entries.map((entry) => [entry.key, entry])).values()]
       .sort((a, b) => a.key.localeCompare(b.key));
     const manifest: VisualBaselineFile = {
-      version: 2,
+      version: 3,
       analyzerVersion: ANALYZER_VERSION,
       updatedAt: new Date().toISOString(),
       analyzedStates,
@@ -183,8 +183,12 @@ export class VisualBaselineStore {
         analyzedStates?: number;
         entries?: unknown[];
       };
-      if (raw.version !== 2 || raw.analyzerVersion !== ANALYZER_VERSION || !Array.isArray(raw.entries)) {
-        const legacy = raw.version === 1 ? 'legacy beta.4 baseline must be regenerated after visual-classifier changes' : 'visual baseline has unsupported or invalid format';
+      if (raw.version !== 3 || raw.analyzerVersion !== ANALYZER_VERSION || !Array.isArray(raw.entries)) {
+        const legacy = raw.version === 1
+          ? 'legacy beta.4 baseline must be regenerated after visual-classifier changes'
+          : raw.version === 2
+            ? 'beta.5 visual baseline must be explicitly regenerated after beta.6 visual-classifier changes'
+            : 'visual baseline has unsupported or invalid format';
         return { existed: false, entries: [], error: legacy };
       }
       const entries = raw.entries.filter((entry): entry is VisualBaselineEntry => {

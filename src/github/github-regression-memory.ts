@@ -13,8 +13,9 @@ interface MemoryEntry {
 }
 
 interface MemoryDocument {
-  version: 2;
+  version: 3;
   fingerprintSchema: 'finding-v2';
+  classifierVersion: 'qa-engine-beta6';
   updatedAt: string;
   findings: MemoryEntry[];
 }
@@ -28,6 +29,7 @@ export interface LoadedGitHubRegressionMemory {
 const SEVERITIES = new Set<Severity>(['critical', 'high', 'medium', 'low', 'info']);
 const MAX_MEMORY_BYTES = 5_000_000;
 const MAX_ENTRIES = 20_000;
+const CLASSIFIER_VERSION = 'qa-engine-beta6' as const;
 
 function isMemoryEntry(value: unknown): value is MemoryEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -62,10 +64,18 @@ export class GitHubRegressionMemoryStore {
         return { existed: true, entries: new Map(), toolingError: 'GitHub regression memory is not a JSON object' };
       }
       const source = parsed as Record<string, unknown>;
-      if (source.version !== 2 || source.fingerprintSchema !== 'finding-v2' || !Array.isArray(source.findings) || source.findings.length > MAX_ENTRIES) {
+      if (
+        source.version !== 3
+        || source.fingerprintSchema !== 'finding-v2'
+        || source.classifierVersion !== CLASSIFIER_VERSION
+        || !Array.isArray(source.findings)
+        || source.findings.length > MAX_ENTRIES
+      ) {
         const legacy = source.version === 1
           ? 'GitHub regression memory is from beta.4 and must be explicitly regenerated for finding-v2 fingerprints'
-          : 'GitHub regression memory has an unsupported or oversized schema';
+          : source.version === 2
+            ? 'GitHub regression memory is from beta.5 and must be explicitly regenerated after beta.6 classifier changes'
+            : 'GitHub regression memory has an unsupported or oversized schema';
         return { existed: true, entries: new Map(), toolingError: legacy };
       }
       const entries = new Map<string, MemoryEntry>();
@@ -98,7 +108,13 @@ export class GitHubRegressionMemoryStore {
         occurrences: Math.min((previous?.occurrences ?? 0) + 1, Number.MAX_SAFE_INTEGER),
       };
     });
-    const document: MemoryDocument = { version: 2, fingerprintSchema: 'finding-v2', updatedAt: now, findings: entries };
+    const document: MemoryDocument = {
+      version: 3,
+      fingerprintSchema: 'finding-v2',
+      classifierVersion: CLASSIFIER_VERSION,
+      updatedAt: now,
+      findings: entries,
+    };
     await mkdir(path.dirname(path.resolve(this.filePath)), { recursive: true });
     await writeFile(this.filePath, `${JSON.stringify(document, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   }
