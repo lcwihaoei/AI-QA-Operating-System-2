@@ -49,6 +49,7 @@ export interface Beta9FixPlanningResult {
 const MAX_CHANGES = 8;
 const MAX_CONTENT_PER_FILE = 250_000;
 const MAX_TOTAL_CONTENT = 750_000;
+const RESERVED_CONTROL_PATH = /(^|\/)\.qa-(?:beta9|runs|backend|control|fix)(?:\/|$)/i;
 
 function canonicalPlan(draft: Beta9FixPlanDraft): Beta9FixPlanDraft {
   return {
@@ -95,6 +96,7 @@ export function validateBeta9FixPlan(plan: Beta9FixPlan, item: WorkItem, finding
   let total = 0;
   for (const change of plan.changes ?? []) {
     if (!safeBackendPath(change.path)) errors.push(`unsafe fix path: ${change.path}`);
+    if (RESERVED_CONTROL_PATH.test(change.path)) errors.push(`fix path targets reserved AI QA control artifacts: ${change.path}`);
     if (seen.has(change.path)) errors.push(`duplicate fix path: ${change.path}`);
     seen.add(change.path);
     if (!['create', 'replace'].includes(change.operation)) errors.push(`unsupported fix operation: ${change.path}`);
