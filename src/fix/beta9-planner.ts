@@ -7,6 +7,18 @@ export interface Beta9SelectedFinding {
   finding: Finding;
 }
 
+export interface Beta9RetryAuthorization {
+  schemaVersion: 1;
+  workItemId: string;
+  findingFingerprint: string;
+  previousAttempt: number;
+  nextAttempt: number;
+  sourceRunId: string;
+  postRunId: string;
+  correlationHash: string;
+  authorizationHash: string;
+}
+
 export interface Beta9Plan {
   schemaVersion: 1;
   generatedAt: string;
@@ -14,6 +26,7 @@ export interface Beta9Plan {
   sourceRunId: string;
   selectedFindings: Beta9SelectedFinding[];
   workPlan: WorkPlan;
+  retryAuthorizations?: Record<string, Beta9RetryAuthorization>;
 }
 
 export interface Beta9PlanValidation {
@@ -117,6 +130,19 @@ function workItemFromFinding(finding: Finding): WorkItem {
   };
 }
 
+export function computeBeta9RetryAuthorizationHash(value: Omit<Beta9RetryAuthorization, 'authorizationHash'>): string {
+  return createHash('sha256').update(JSON.stringify({
+    schemaVersion: value.schemaVersion,
+    workItemId: value.workItemId,
+    findingFingerprint: value.findingFingerprint,
+    previousAttempt: value.previousAttempt,
+    nextAttempt: value.nextAttempt,
+    sourceRunId: value.sourceRunId,
+    postRunId: value.postRunId,
+    correlationHash: value.correlationHash,
+  })).digest('hex');
+}
+
 export function buildBeta9Plan(input: { result: QaRunResult; selectedFingerprints: string[]; project?: string }): Beta9Plan {
   const selected = [...new Set(input.selectedFingerprints.map((value) => value.trim()).filter(Boolean))];
   if (selected.length === 0) throw new Error('Beta.9 requires at least one explicitly selected finding');
@@ -146,6 +172,7 @@ export function buildBeta9Plan(input: { result: QaRunResult; selectedFingerprint
     sourceRunId: input.result.runId,
     selectedFindings,
     workPlan,
+    retryAuthorizations: {},
   };
 }
 
@@ -166,6 +193,22 @@ export function validateBeta9Plan(plan: Beta9Plan): Beta9PlanValidation {
   for (const item of plan.workPlan.items) {
     if (!plan.selectedFindings.some((selected) => selected.workItemId === item.id)) errors.push(`work item has no selected finding: ${item.id}`);
     if (item.kind !== 'bug-fix') errors.push(`Beta.9 selected finding item must be bug-fix: ${item.id}`);
+  }
+  for (const [itemId, authorization] of Object.entries(plan.retryAuthorizations ?? {})) {
+    const item = plan.workPlan.items.find((candidate) => candidate.id === itemId);
+    const selected = plan.selectedFindings.find((candidate) => candidate.workItemId === itemId);
+    if (!item || !selected) {
+      errors.push(`retry authorization references unknown work item: ${itemId}`);
+      continue;
+    }
+    if (authorization.schemaVersion !== 1 || authorization.workItemId !== itemId) errors.push(`invalid retry authorization item binding: ${itemId}`);
+    if (authorization.findingFingerprint !== selected.finding.fingerprint) errors.push(`retry authorization finding mismatch: ${itemId}`);
+    if (!Number.isInteger(authorization.previousAttempt) || authorization.previousAttempt < 1) errors.push(`invalid retry previous attempt: ${itemId}`);
+    if (authorization.nextAttempt !== authorization.previousAttempt + 1 || authorization.nextAttempt > item.execution.maxAttempts) errors.push(`invalid retry next attempt: ${itemId}`);
+    if (authorization.sourceRunId !== plan.sourceRunId || !authorization.postRunId?.trim()) errors.push(`invalid retry run binding: ${itemId}`);
+    if (!/^[a-f0-9]{64}$/i.test(authorization.correlationHash)) errors.push(`invalid retry correlation hash: ${itemId}`);
+    const { authorizationHash: _authorizationHash, ...unsigned } = authorization;
+    if (authorization.authorizationHash !== computeBeta9RetryAuthorizationHash(unsigned)) errors.push(`stale retry authorization hash: ${itemId}`);
   }
   return { valid: errors.length === 0, errors };
 }
