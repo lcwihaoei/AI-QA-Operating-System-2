@@ -1,7 +1,12 @@
 import { assertWorkPlanSafe, computeWorkItemScopeHash, type WorkItem } from '../planning/work-item.js';
 import { pathAllowedForWorkItem, validateBackendVerificationCommand } from '../backend/backend-executor.js';
 import type { BackendExecutionWorkspace, BackendVerificationCommand } from '../backend/executor-types.js';
-import { selectedFindingForItem, validateBeta9Plan, type Beta9Plan } from './beta9-planner.js';
+import {
+  computeBeta9RetryAuthorizationHash,
+  selectedFindingForItem,
+  validateBeta9Plan,
+  type Beta9Plan,
+} from './beta9-planner.js';
 import { validateBeta9FixPlan, type Beta9FixPlan } from './beta9-fix-plan.js';
 
 export interface Beta9AttemptCommandRecord {
@@ -18,6 +23,7 @@ export interface Beta9FixAttemptRecord {
   findingFingerprint: string;
   scopeHash: string;
   fixPlanHash: string;
+  retryAuthorizationHash?: string;
   attempt: number;
   startedAt: string;
   finishedAt: string;
@@ -28,7 +34,7 @@ export interface Beta9FixAttemptRecord {
   testResults: { targetedPassed: boolean; regressionPassed: boolean; beta7Passed: boolean };
   evidenceReferences: string[];
   rollbackState: 'not-started' | 'not-needed' | 'completed';
-  outcome: 'verified' | 'rejected' | 'rolled-back';
+  outcome: 'awaiting-correlation' | 'verified' | 'rejected' | 'rolled-back';
   error?: string;
 }
 
@@ -102,7 +108,7 @@ export class Beta9FixExecutor {
     beta9: Beta9Plan,
     itemId: string,
     fixPlan: Beta9FixPlan,
-    input: { confirmPlanHash: string; attempt?: number },
+    input: { confirmPlanHash: string; attempt?: number; retryAuthorizationHash?: string },
   ): Promise<Beta9FixExecutionResult> {
     const finding = selectedFindingForItem(beta9, itemId);
     const seedItem = beta9.workPlan.items.find((candidate) => candidate.id === itemId);
@@ -126,6 +132,18 @@ export class Beta9FixExecutor {
       item = approvedItem(beta9, itemId);
       attemptRecord.scopeHash = item.approval.scopeHash!;
       if (!Number.isInteger(attemptNumber) || attemptNumber < 1 || attemptNumber > item.execution.maxAttempts) throw new Error(`attempt must be between 1 and ${item.execution.maxAttempts}`);
+      if (attemptNumber === 1 && input.retryAuthorizationHash) throw new Error('first Beta.9 attempt must not use a retry authorization');
+      if (attemptNumber > 1) {
+        const authorization = beta9.retryAuthorizations?.[itemId];
+        if (!authorization) throw new Error('Beta.9 retry requires a post-QA retry authorization in the plan');
+        const { authorizationHash: _authorizationHash, ...unsigned } = authorization;
+        if (authorization.authorizationHash !== computeBeta9RetryAuthorizationHash(unsigned)) throw new Error('Beta.9 retry authorization hash is stale or invalid');
+        if (authorization.workItemId !== itemId || authorization.findingFingerprint !== finding.fingerprint) throw new Error('Beta.9 retry authorization does not match this finding');
+        if (authorization.sourceRunId !== beta9.sourceRunId) throw new Error('Beta.9 retry authorization source run does not match the plan');
+        if (authorization.previousAttempt !== attemptNumber - 1 || authorization.nextAttempt !== attemptNumber) throw new Error('Beta.9 retry authorization does not match the requested attempt number');
+        if (!input.retryAuthorizationHash || input.retryAuthorizationHash !== authorization.authorizationHash) throw new Error('Beta.9 retry requires confirmation of the exact retry authorization hash');
+        attemptRecord.retryAuthorizationHash = authorization.authorizationHash;
+      }
       if (!input.confirmPlanHash || input.confirmPlanHash !== fixPlan.planHash) throw new Error('execution requires confirmation of the exact Beta.9 fix plan hash');
       const planErrors = validateBeta9FixPlan(fixPlan, item, finding);
       if (planErrors.length > 0) throw new Error(`Beta.9 fix plan rejected: ${planErrors.join('; ')}`);
@@ -146,6 +164,7 @@ export class Beta9FixExecutor {
       attemptRecord.originalBranch = originalBranch;
       if (['main', 'master', 'trunk'].includes(originalBranch.toLowerCase())) throw new Error('Beta.9 refuses to start from a default branch; use a disposable feature branch checkout');
       if (item.execution.requireCleanWorkspace && !(await this.workspace.isClean())) throw new Error('Beta.9 execution requires a clean working tree');
+      if (attemptNumber > 1) delete beta9.retryAuthorizations?.[itemId];
       executionBranch = await this.workspace.createBranch(item.id);
       result.branch = executionBranch;
       attemptRecord.executionBranch = executionBranch;
@@ -178,9 +197,10 @@ export class Beta9FixExecutor {
       attemptRecord.evidenceReferences.push(commandEvidence('beta7', fixPlan.beta7Qa));
 
       result.verified = true;
-      item.status = 'completed';
+      item.status = 'verification';
       attemptRecord.rollbackState = 'not-needed';
-      attemptRecord.outcome = 'verified';
+      attemptRecord.outcome = 'awaiting-correlation';
+      attemptRecord.evidenceReferences.push('post-beta7-correlation:required');
       finishAttempt(attemptRecord, result);
       return result;
     } catch (error: unknown) {
