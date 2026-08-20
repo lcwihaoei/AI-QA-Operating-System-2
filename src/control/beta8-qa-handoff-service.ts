@@ -92,6 +92,10 @@ function visiblePath(repoRoot: string, absolute: string): string {
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : path.basename(absolute);
 }
 
+function reportAbsolutePath(repoRoot: string, value: string): string {
+  return path.isAbsolute(value) ? path.resolve(value) : path.resolve(repoRoot, value);
+}
+
 async function readBoundedJson<T>(filePath: string, maxBytes = MAX_STATE_BYTES): Promise<T> {
   const buffer = await readFile(filePath);
   if (buffer.length > maxBytes) throw new Error(`artifact exceeds ${maxBytes} bytes: ${path.basename(filePath)}`);
@@ -152,7 +156,13 @@ export class Beta8QaHandoffService {
 
   private async scanRuns(): Promise<Map<string, string>> {
     if (!this.runsRoot) throw new Error('Beta.7 run root is not configured');
-    const entries = await readdir(this.runsRoot, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(this.runsRoot, { withFileTypes: true });
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return new Map<string, string>();
+      throw error;
+    }
     if (entries.length > MAX_RUN_DIRECTORIES) throw new Error(`Beta.7 run root exceeds ${MAX_RUN_DIRECTORIES} entries; configure an exact result path`);
     const found = new Map<string, string>();
     for (const entry of entries) {
@@ -223,8 +233,8 @@ export class Beta8QaHandoffService {
       const report = parsed.report;
       const reportSummary = report ? {
         enabled: report.enabled,
-        ...(report.htmlPath ? { html: visiblePath(repo, path.resolve(report.htmlPath)) } : {}),
-        ...(report.markdownPath ? { markdown: visiblePath(repo, path.resolve(report.markdownPath)) } : {}),
+        ...(report.htmlPath ? { html: visiblePath(repo, reportAbsolutePath(repo, report.htmlPath)) } : {}),
+        ...(report.markdownPath ? { markdown: visiblePath(repo, reportAbsolutePath(repo, report.markdownPath)) } : {}),
         ...(report.videos !== undefined ? { videos: report.videos } : {}),
         ...(report.toolingError ? { toolingError: bounded(report.toolingError, 1_000) } : {}),
       } : undefined;
@@ -263,7 +273,7 @@ export class Beta8QaHandoffService {
     const readiness = await this.readiness();
     if (!readiness.ready) throw new Error(`Beta.8 final QA is blocked: ${readiness.blockers.join('; ')}`);
     if (await this.savedState()) throw new Error('Beta.8 final QA handoff already exists; refusing to overwrite audited QA evidence');
-    const before = this.config.exactResultPath ? await this.scanRuns().catch(() => new Map<string, string>()) : await this.scanRuns();
+    const before = await this.scanRuns();
     const qaStartedAt = new Date().toISOString();
     const startedAtMs = Date.parse(qaStartedAt);
     const result = await new LocalGitBackendWorkspace(repo).run(command);
