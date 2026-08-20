@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { discoverFreshBeta7Result } from './beta7-result-discovery.js';
 import { beta8DashboardJs } from './beta8-dashboard.js';
+import { beta8DashboardCss } from './beta8-dashboard-ui.js';
 import { Beta8DashboardActionService } from './beta8-action-service.js';
 import {
   beta9DashboardJs,
@@ -116,7 +117,7 @@ function requiredString(record: Record<string, unknown>, key: string, max = 500)
 
 function dashboardDocument(): string {
   return dashboardHtml()
-    .replace('</head>', '  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
+    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
     .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
 }
 
@@ -261,6 +262,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
       return json(response, 200, { ...source, actionsAllowed: actionRequestAllowed(request, host, allowActions) && !plan.available });
     }
     if (pathname === '/dashboard.css') return text(response, 200, 'text/css; charset=utf-8', dashboardCss(), headOnly);
+    if (pathname === '/beta8-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8DashboardCss(), headOnly);
     if (pathname === '/beta9-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta9DashboardCss(), headOnly);
     if (pathname === '/dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', dashboardJs(), headOnly);
     if (pathname === '/beta8-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8DashboardJs(), headOnly);
