@@ -8,6 +8,8 @@ const program = new Command();
 program
   .name('aiqa-dashboard')
   .option('--state <file>', 'control-plane state file', '.qa-control/state.json')
+  .option('--beta8-repo <path>', 'optional frontend repository/project root for governed Beta.8 discovery/interview/blueprint actions')
+  .option('--beta8-artifacts <dir>', 'Beta.8 dashboard artifact root', '.qa-backend')
   .option('--beta9-plan <file>', 'Beta.9 plan file', '.qa-beta9/plan.json')
   .option('--beta7-result <file>', 'optional source Beta.7 result used to display/select findings and correlate fixes')
   .option('--beta9-repo <path>', 'optional local target git checkout for governed Beta.9 planning/execution')
@@ -15,7 +17,7 @@ program
   .option('--beta9-post-result <file>', 'optional exact fresh post-fix Beta.7 result; overrides safe auto-discovery')
   .option('--beta9-post-results-root <dir>', 'optional Beta.7 run root for unambiguous fresh-result auto-discovery; defaults to <beta9-repo>/.qa-runs when a target repo is configured')
   .option('--beta9-artifacts <dir>', 'Beta.9 dashboard artifact root', '.qa-beta9')
-  .option('--allow-actions', 'allow explicit loopback-only Beta.9 actions; repository mutation still requires reviewed plan approval and write confirmation', false)
+  .option('--allow-actions', 'allow explicit loopback-only Beta.8/Beta.9 actions; repository mutation remains separately approval-gated', false)
   .option('--host <host>', 'bind host', '127.0.0.1')
   .option('--port <number>', 'bind port', '8787')
   .option('--allow-remote', 'allow non-loopback bind when AIQA_DASHBOARD_TOKEN is also set', false);
@@ -33,6 +35,8 @@ const started = await startDashboard(new ControlPlaneStore(raw.state), {
   host: raw.host,
   port,
   token,
+  beta8RepoPath: raw.beta8Repo,
+  beta8ArtifactRoot: raw.beta8Artifacts,
   beta9PlanPath: raw.beta9Plan,
   beta7ResultPath: raw.beta7Result,
   beta9RepoPath: raw.beta9Repo,
