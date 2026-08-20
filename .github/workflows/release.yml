@@ -2,13 +2,8 @@ name: Verified Release
 
 on:
   push:
-    branches:
-      - feature/v0.10.0-beta.7-evidence-rich-report
-    paths:
-      - release-manifest.json
-      - RELEASE_NOTES.md
-      - package.json
-      - .github/workflows/release.yml
+    tags:
+      - 'v0.10.0-beta.*'
 
 permissions:
   contents: write
@@ -33,18 +28,22 @@ jobs:
         with:
           node-version: 22
 
-      - name: Validate release metadata
+      - name: Validate release metadata and tag identity
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./release-manifest.json').version")"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           CHANNEL="$(node -p "require('./release-manifest.json').channel")"
+          TAG="v$VERSION"
           test "$VERSION" = "$PACKAGE_VERSION"
           test "$CHANNEL" = "prerelease"
           test -n "$VERSION"
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "$TAG"
+          grep -Fqx "# AI QA Operating System $TAG" <(head -n 1 RELEASE_NOTES.md)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       - name: Repository safety scan
         shell: bash
@@ -84,7 +83,7 @@ jobs:
       - name: Real browser field-regression gates
         env:
           AIQA_BROWSER_E2E: '1'
-        run: npx vitest run test/browser-explorer-e2e.test.ts test/visual-agent-e2e.test.ts test/dom-geometry-browser-regression.test.ts test/qa-manager-report-e2e.test.ts
+        run: npx vitest run test/browser-explorer-e2e.test.ts test/visual-agent-e2e.test.ts test/dom-geometry-browser-regression.test.ts test/qa-manager-report-e2e.test.ts test/feature-planner-browser-e2e.test.ts
 
       - name: Verify package contents
         run: npm pack --dry-run
