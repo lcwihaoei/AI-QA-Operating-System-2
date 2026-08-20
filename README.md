@@ -46,6 +46,30 @@ npm run qa -- --url https://staging.example.com --control-plane-state .qa-contro
 npm run qa -- --url https://staging.example.com --ux-product my-product --update-ux-memory
 ```
 
+## Beta.7 — Evidence-rich QA report
+
+Every QA run now produces an offline review bundle under `.qa-runs/<run-id>/report/`:
+
+```text
+report/
+├── index.html
+├── report-data.json
+└── executive-summary.md
+```
+
+The HTML report has Executive, Product/UX and Engineering views, screenshot evidence with geometry annotations, baseline regression state, confidence, reproduction steps, root-cause hypotheses, recommended changes, regression risk and required regression-test guidance. Source attribution is explicitly rendered as `SOURCE_NOT_CONFIRMED` unless the run supplied source metadata.
+
+Add viewport recordings when evidence video is appropriate:
+
+```bash
+npm run qa -- \
+  --url https://staging.example.com \
+  --visual-viewports desktop,tablet,mobile \
+  --record-video
+```
+
+Video is opt-in because it increases storage use and may capture on-screen content. Use `--no-evidence-report` to disable the report layer. See [`docs/EVIDENCE_REPORT.md`](docs/EVIDENCE_REPORT.md).
+
 ## M7 — Autonomous Fix Agent
 
 Plan a fix directly from a QA run result:
@@ -121,11 +145,13 @@ events.json
 result.json
 network.har
 screenshots/
+videos/                 # only with --record-video
+report/
 ux-opportunities.json
 github-issue-plan.json
 ```
 
-Sensitive browser/device/log semantics remain intentionally minimized. UX reasoners receive aggregate metrics, device raw logs are not persisted, semantic values use hashes, and GitHub issue-plan text is sanitized.
+Sensitive browser/device/log semantics remain intentionally minimized. UX reasoners receive aggregate metrics, device raw logs are not persisted, semantic values use hashes, GitHub issue-plan text is sanitized, and report evidence paths are kept relative to the run directory.
 
 ## Architecture
 
@@ -146,7 +172,7 @@ Sensitive browser/device/log semantics remain intentionally minimized. UX reason
                   │           │            │
                   └───────────┼────────────┘
                               ▼
-                         Control Plane
+                    Evidence Report / Control Plane
 ```
 
 The next work after M10 is hardening rather than another required milestone: real-world project adapters, transactional control-plane storage, richer task definitions, and deployment packaging.
