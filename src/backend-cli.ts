@@ -2,7 +2,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Command } from 'commander';
 import { buildArchitectureInterview, validateArchitectureAnswers, type ArchitectureAnswer, type ArchitectureInterview } from './backend/architecture-interview.js';
-import { discoverFrontend } from './backend/frontend-discovery.js';
+import { discoverFrontend, type FrontendDiscoveryResult } from './backend/frontend-discovery.js';
+import { buildBackendBlueprint } from './backend/security-blueprint.js';
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(path.resolve(filePath)), { recursive: true });
@@ -37,6 +38,21 @@ program.command('validate-interview')
     const validation = validateArchitectureAnswers(interview, answers);
     process.stdout.write(`${JSON.stringify(validation, null, 2)}\n`);
     if (!validation.readyForBlueprint) process.exitCode = 2;
+  });
+
+program.command('blueprint')
+  .requiredOption('--discovery <path>', 'frontend-discovery.json path')
+  .requiredOption('--interview <path>', 'architecture-interview.json path')
+  .requiredOption('--answers <path>', 'confirmed architecture answers JSON array')
+  .option('--out <path>', 'blueprint output path', '.qa-backend/backend-blueprint.json')
+  .action(async (options: { discovery: string; interview: string; answers: string; out: string }) => {
+    const discovery = JSON.parse(await readFile(options.discovery, 'utf8')) as FrontendDiscoveryResult;
+    const interview = JSON.parse(await readFile(options.interview, 'utf8')) as ArchitectureInterview;
+    const answers = JSON.parse(await readFile(options.answers, 'utf8')) as ArchitectureAnswer[];
+    if (!Array.isArray(answers)) throw new Error('answers file must contain a JSON array');
+    const blueprint = buildBackendBlueprint({ discovery, interview, answers });
+    await writeJson(path.resolve(options.out), blueprint);
+    process.stdout.write(`Security-first backend blueprint written to ${path.resolve(options.out)}. Execution remains approval-blocked.\n`);
   });
 
 await program.parseAsync(process.argv);

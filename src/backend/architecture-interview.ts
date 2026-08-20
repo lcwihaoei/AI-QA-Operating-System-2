@@ -41,7 +41,9 @@ export interface InterviewValidation {
   readyForBlueprint: boolean;
   missing: string[];
   unconfirmed: string[];
+  invalid: string[];
   unknownQuestionIds: string[];
+  duplicateQuestionIds: string[];
 }
 
 const BACKEND_OPTIONS = ['TypeScript / Node.js', 'JavaScript / Node.js', 'Python', 'Go', 'Java', 'PHP', 'C# / .NET', 'Rust', 'Other'];
@@ -124,10 +126,27 @@ export function buildArchitectureInterview(discovery: FrontendDiscoveryResult): 
 
 export function validateArchitectureAnswers(interview: ArchitectureInterview, answers: ArchitectureAnswer[]): InterviewValidation {
   const questions = new Map(interview.rounds.flatMap((round) => round.questions).map((question) => [question.id, question] as const));
+  const counts = new Map<string, number>();
+  for (const answer of answers) counts.set(answer.questionId, (counts.get(answer.questionId) ?? 0) + 1);
+  const duplicateQuestionIds = [...counts.entries()].filter(([, count]) => count > 1).map(([id]) => id);
   const answerMap = new Map(answers.map((answer) => [answer.questionId, answer] as const));
-  const unknownQuestionIds = answers.filter((answer) => !questions.has(answer.questionId)).map((answer) => answer.questionId);
+  const unknownQuestionIds = [...new Set(answers.filter((answer) => !questions.has(answer.questionId)).map((answer) => answer.questionId))];
   const missing: string[] = [];
   const unconfirmed: string[] = [];
+  const invalid: string[] = [];
+
+  for (const [questionId, answer] of answerMap) {
+    const question = questions.get(questionId);
+    if (!question) continue;
+    const value = answer.value;
+    const validType = question.kind === 'boolean' ? typeof value === 'boolean'
+      : question.kind === 'multi' ? Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string' && item.trim())
+        : typeof value === 'string' && value.trim().length > 0;
+    const validOption = !question.options ? true
+      : question.kind === 'multi' && Array.isArray(value) ? value.every((item) => question.options!.includes(item))
+        : typeof value === 'string' ? question.options.includes(value) : false;
+    if (!validType || !validOption) invalid.push(questionId);
+  }
 
   for (const questionId of interview.generationBlockedUntilConfirmed) {
     const question = questions.get(questionId);
@@ -138,5 +157,5 @@ export function validateArchitectureAnswers(interview: ArchitectureInterview, an
     if (question.requiresExplicitConfirmation && !answer.confirmed) unconfirmed.push(questionId);
   }
 
-  return { readyForBlueprint: missing.length === 0 && unconfirmed.length === 0 && unknownQuestionIds.length === 0, missing, unconfirmed, unknownQuestionIds };
+  return { readyForBlueprint: missing.length === 0 && unconfirmed.length === 0 && invalid.length === 0 && unknownQuestionIds.length === 0 && duplicateQuestionIds.length === 0, missing, unconfirmed, invalid, unknownQuestionIds, duplicateQuestionIds };
 }

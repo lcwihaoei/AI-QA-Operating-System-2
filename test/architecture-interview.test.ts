@@ -36,7 +36,8 @@ describe('Beta.8 architecture interview', () => {
 
   it('blocks blueprint generation when a mandatory answer exists but is not explicitly confirmed', () => {
     const interview = buildArchitectureInterview(discovery());
-    const answers = interview.generationBlockedUntilConfirmed.map((id) => answer(id, id === 'qa-gate' || id === 'project-scope-confirmation' ? true : id === 'security-baseline' || id === 'data-classification' ? ['None'] : 'confirmed'));
+    const values: Record<string, string | string[] | boolean> = { 'project-scope-confirmation': true, 'backend-language': 'TypeScript / Node.js', 'backend-framework': 'NestJS', 'deployment-target': 'Docker', database: 'PostgreSQL', authentication: 'Session cookie', 'authorization-model': 'RBAC roles', 'data-classification': ['None'], 'security-baseline': ['Input/schema validation'], 'mock-strategy': 'Hybrid: keep fallback mocks until each module passes QA', 'seed-data-policy': 'No, create fresh seed data', 'qa-gate': true };
+    const answers = interview.generationBlockedUntilConfirmed.map((id) => answer(id, values[id] ?? 'No uploads'));
     const backend = answers.find((item) => item.questionId === 'backend-language')!;
     backend.confirmed = false;
     const validation = validateArchitectureAnswers(interview, answers);
@@ -46,8 +47,9 @@ describe('Beta.8 architecture interview', () => {
 
   it('becomes blueprint-ready only after every generation gate has an explicit answer and confirmation', () => {
     const interview = buildArchitectureInterview(discovery());
-    const answers = interview.generationBlockedUntilConfirmed.map((id) => answer(id, id === 'qa-gate' || id === 'project-scope-confirmation' ? true : id === 'security-baseline' ? ['Input/schema validation', 'Object-level authorization', 'Secret isolation'] : id === 'data-classification' ? ['Personal data'] : 'confirmed'));
+    const values: Record<string, string | string[] | boolean> = { 'project-scope-confirmation': true, 'backend-language': 'TypeScript / Node.js', 'backend-framework': 'NestJS', 'deployment-target': 'Docker', database: 'PostgreSQL', authentication: 'Session cookie', 'authorization-model': 'RBAC roles', 'data-classification': ['Personal data'], 'security-baseline': ['Input/schema validation', 'Object-level authorization', 'Secret isolation'], 'mock-strategy': 'Hybrid: keep fallback mocks until each module passes QA', 'seed-data-policy': 'No, create fresh seed data', 'qa-gate': true };
+    const answers = interview.generationBlockedUntilConfirmed.map((id) => answer(id, values[id] ?? 'No uploads'));
     const validation = validateArchitectureAnswers(interview, answers);
-    expect(validation).toEqual({ readyForBlueprint: true, missing: [], unconfirmed: [], unknownQuestionIds: [] });
+    expect(validation).toEqual({ readyForBlueprint: true, missing: [], unconfirmed: [], invalid: [], unknownQuestionIds: [], duplicateQuestionIds: [] });
   });
 });

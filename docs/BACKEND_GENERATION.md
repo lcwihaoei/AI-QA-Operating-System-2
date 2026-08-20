@@ -49,6 +49,20 @@ npm run backend -- validate-interview \
 
 The command exits with status 2 until the interview is ready for blueprint generation.
 
+## Sprint 3: security-first blueprint
+
+After all required interview answers are valid and explicitly confirmed:
+
+```bash
+npm run backend -- blueprint \
+  --discovery .qa-backend/frontend-discovery.json \
+  --interview .qa-backend/architecture-interview.json \
+  --answers answers.json \
+  --out .qa-backend/backend-blueprint.json
+```
+
+The blueprint contains a minimum non-negotiable security baseline, threat-surface items, inferred API/data-model plans, a bounded dependency-aware implementation graph, and per-mock migration proposals. Blueprint generation still sets `executionGate.approved=false`; it cannot grant itself permission to mutate the target repository.
+
 ## Next gate
 
-Sprint 3 will convert a validated interview plus discovery evidence into a security blueprint, API/data-model plan, bounded implementation graph, and mock-migration plan. It must still require user approval before mutating a target application.
+Sprint 4 will introduce an approval-bound execution workspace. It must apply one bounded task at a time, preserve a target repository safety boundary, require verification after each task, and never delete or promote mock data without the mock-migration approval recorded for that source.
