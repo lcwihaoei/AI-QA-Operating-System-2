@@ -7,6 +7,7 @@ const program = new Command();
 program
   .name('aiqa-dashboard')
   .option('--state <file>', 'control-plane state file', '.qa-control/state.json')
+  .option('--beta9-plan <file>', 'read-only Beta.9 plan file', '.qa-beta9/plan.json')
   .option('--host <host>', 'bind host', '127.0.0.1')
   .option('--port <number>', 'bind port', '8787')
   .option('--allow-remote', 'allow non-loopback bind when AIQA_DASHBOARD_TOKEN is also set', false);
@@ -18,5 +19,5 @@ const loopback = isLoopbackHost(raw.host);
 if (!loopback && raw.allowRemote !== true) throw new Error('remote dashboard bind requires --allow-remote');
 const token = loopback ? undefined : process.env.AIQA_DASHBOARD_TOKEN;
 if (!loopback && !token) throw new Error('remote dashboard bind requires AIQA_DASHBOARD_TOKEN');
-const started = await startDashboard(new ControlPlaneStore(raw.state), { host: raw.host, port, token });
+const started = await startDashboard(new ControlPlaneStore(raw.state), { host: raw.host, port, token, beta9PlanPath: raw.beta9Plan });
 console.log(`AI QA dashboard listening on http://${started.host}:${started.port}`);
