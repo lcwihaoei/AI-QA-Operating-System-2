@@ -1,0 +1,78 @@
+name: Beta10 Browser State Patch
+
+on:
+  push:
+    branches:
+      - feature/v0.10.0-beta.10-real-project-hardening
+    paths:
+      - .github/workflows/beta10-browser-state-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.repository == 'lcwihaoei/AI-QA-Operating-System-2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v0.10.0-beta.10-real-project-hardening
+          fetch-depth: 0
+
+      - name: Apply precise collapsed-region suppression
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/agents/browser-explorer.ts')
+          s = p.read_text()
+          old = '''      const intentionallySuppressed = (element: Element): boolean => {
+        if (element.closest('[hidden],[inert],[aria-hidden="true"]')) return true;
+        let current: Element | null = element;
+        for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+          const style = getComputedStyle(current as HTMLElement);
+          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0.01) return true;
+          if (depth > 0 && style.transform !== 'none') return true; // common closed drawer/off-canvas state
+        }
+        return false;
+      };
+'''
+          new = '''      const isWithinCollapsedControlledRegion = (element: Element): boolean => {
+        const rect = (element as HTMLElement).getBoundingClientRect();
+        const horizontallyDisplaced = rect.right <= 0 || rect.left >= window.innerWidth;
+        if (!horizontallyDisplaced) return false;
+        const controls = Array.from(document.querySelectorAll<HTMLElement>('[aria-controls][aria-expanded="false"]'));
+        for (const control of controls) {
+          const controlledId = control.getAttribute('aria-controls');
+          if (!controlledId) continue;
+          const region = document.getElementById(controlledId);
+          if (region && (region === element || region.contains(element))) return true;
+        }
+        return false;
+      };
+
+      const intentionallySuppressed = (element: Element): boolean => {
+        if (element.closest('[hidden],[inert],[aria-hidden="true"],[data-state="closed"],[data-open="false"]')) return true;
+        let current: Element | null = element;
+        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+          const style = getComputedStyle(current as HTMLElement);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity || '1') <= 0.01) return true;
+        }
+        return isWithinCollapsedControlledRegion(element);
+      };
+'''
+          if old not in s:
+              raise SystemExit('expected browser-explorer suppression block not found')
+          p.write_text(s.replace(old, new, 1))
+
+      - name: Commit production patch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/agents/browser-explorer.ts
+          test "$(git diff --cached --name-only)" = "src/agents/browser-explorer.ts"
+          git commit -m 'fix(beta.10): make browser UI suppression state-aware'
+          git push origin HEAD:feature/v0.10.0-beta.10-real-project-hardening
