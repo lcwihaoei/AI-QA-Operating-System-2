@@ -1,12 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { beta9DashboardJs, loadBeta9DashboardSummary } from './beta9-dashboard.js';
 import { ControlPlaneStore } from './control-plane.js';
 import { dashboardCss, dashboardHtml, dashboardJs } from './dashboard-ui.js';
 
 export { dashboardCss, dashboardHtml, dashboardJs } from './dashboard-ui.js';
 
-export interface DashboardServerOptions { host?: string; port?: number; token?: string; }
+export interface DashboardServerOptions { host?: string; port?: number; token?: string; beta9PlanPath?: string; }
 export function isLoopbackHost(host: string): boolean { return host === '127.0.0.1' || host === 'localhost' || host === '::1'; }
 
 function authorized(request: IncomingMessage, token: string | undefined): boolean {
@@ -37,9 +38,14 @@ function text(response: ServerResponse, status: number, contentType: string, bod
   response.end(headOnly ? '' : body);
 }
 
+function dashboardDocument(): string {
+  return dashboardHtml().replace('</body>', '  <script src="/beta9-dashboard.js" defer></script>\n</body>');
+}
+
 export async function startDashboard(store: ControlPlaneStore, options: DashboardServerOptions = {}) {
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
+  const beta9PlanPath = options.beta9PlanPath ?? '.qa-beta9/plan.json';
   if (!isLoopbackHost(host) && !options.token) throw new Error('remote dashboard binding requires a bearer token');
 
   const server = createServer(async (request, response) => {
@@ -56,8 +62,10 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
         return json(response, 500, { error: String(error) });
       }
     }
+    if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/dashboard.css') return text(response, 200, 'text/css; charset=utf-8', dashboardCss(), headOnly);
     if (pathname === '/dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', dashboardJs(), headOnly);
+    if (pathname === '/beta9-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta9DashboardJs(), headOnly);
     if (pathname === '/') {
       response.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
@@ -67,7 +75,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
         'referrer-policy': 'no-referrer',
         'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
       });
-      return response.end(headOnly ? '' : dashboardHtml());
+      return response.end(headOnly ? '' : dashboardDocument());
     }
     return json(response, 404, { error: 'not found' });
   });
