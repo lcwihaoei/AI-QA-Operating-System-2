@@ -8,6 +8,7 @@ import { Beta8AcceptanceDashboardService } from './beta8-acceptance-service.js';
 import { Beta8DashboardActionService } from './beta8-action-service.js';
 import { beta8DashboardJs } from './beta8-dashboard.js';
 import { beta8DashboardCss } from './beta8-dashboard-ui.js';
+import { Beta8MockAcceptanceDashboardService } from './beta8-mock-acceptance-service.js';
 import { beta8MockDashboardJs } from './beta8-mock-dashboard.js';
 import { beta8MockDashboardCss } from './beta8-mock-dashboard-ui.js';
 import { Beta8MockMigrationDashboardService } from './beta8-mock-migration-service.js';
@@ -171,6 +172,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     modelEndpoint: options.beta8MockModelEndpoint,
     modelToken: options.beta8MockModelToken,
   });
+  const beta8MockAcceptance = options.beta8RepoPath ? new Beta8MockAcceptanceDashboardService(options.beta8RepoPath, beta8ArtifactRoot) : undefined;
   const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
     sourceResultPath: options.beta7ResultPath!,
@@ -266,6 +268,19 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           if (body.confirmWrite !== true) throw new Error('mock-execute requires confirmWrite=true');
           return json(response, 200, await beta8MockMigration.execute(recordId, proposalHash, true));
         }
+        if (pathname === '/api/beta8/mock-preview-acceptance') {
+          if (!beta8MockAcceptance) throw new Error('Beta.8 target repository is not configured for mock acceptance');
+          const recordId = requiredString(body, 'recordId', 120);
+          return json(response, 200, await beta8MockAcceptance.preview(recordId));
+        }
+        if (pathname === '/api/beta8/mock-accept') {
+          if (!beta8MockAcceptance) throw new Error('Beta.8 target repository is not configured for mock acceptance');
+          const recordId = requiredString(body, 'recordId', 120);
+          const acceptanceHash = requiredString(body, 'acceptanceHash', 64);
+          if (!/^[a-f0-9]{64}$/i.test(acceptanceHash)) throw new Error('acceptanceHash must be a sha256');
+          const acceptedBy = requiredString(body, 'acceptedBy', 120);
+          return json(response, 200, await beta8MockAcceptance.accept(recordId, acceptanceHash, acceptedBy));
+        }
         return json(response, 404, { error: 'unknown Beta.8 dashboard action' });
       } catch (error: unknown) {
         const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
@@ -342,12 +357,18 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
       }
     }
     if (pathname === '/api/beta8') {
-      const [summary, acceptance, mockMigration] = await Promise.all([
+      const [summary, acceptance, mockMigration, mockAcceptance] = await Promise.all([
         beta8Actions.summary(),
         beta8Acceptance ? beta8Acceptance.summary() : Promise.resolve({ available: false, items: {} }),
         beta8MockMigration.summary(),
+        beta8MockAcceptance ? beta8MockAcceptance.summary() : Promise.resolve({ available: false, items: {} }),
       ]);
-      return json(response, 200, { ...summary, acceptance, mockMigration, actionsAllowed: actionRequestAllowed(request, host, allowActions) });
+      return json(response, 200, {
+        ...summary,
+        acceptance,
+        mockMigration: { ...mockMigration, acceptance: mockAcceptance },
+        actionsAllowed: actionRequestAllowed(request, host, allowActions),
+      });
     }
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/api/beta9/actions') {
