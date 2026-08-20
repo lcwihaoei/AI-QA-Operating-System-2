@@ -110,11 +110,12 @@ describe('beta7 evidence report', () => {
     expect(html).toContain('../screenshots/finding.png');
     expect(html).toContain('../videos/tablet.webm');
     expect(html).toContain('SOURCE_NOT_CONFIRMED');
+    expect(html).toContain('Add visible labels or aria-label.');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(data).toContain('"status": "new"');
     expect(data).not.toContain(runDir);
     expect(markdown).toContain('PASS_WITH_ISSUES');
-    expect(markdown).toContain('Add visible labels or aria-label.');
+    expect(markdown).toContain('Inspect the component width/height');
   });
 });
