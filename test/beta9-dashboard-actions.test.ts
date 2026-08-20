@@ -133,7 +133,7 @@ describe('Beta.9 governed dashboard action service', () => {
     expect(executed.items[itemId]!.attempt?.outcome).toBe('awaiting-correlation');
     expect(await readFile(path.join(root, 'src/app.ts'), 'utf8')).toContain('correct label');
     expect((await exec('git', ['branch', '--show-current'], { cwd: root })).stdout.trim()).toMatch(/^aiqa\/fix\/b9-fix-/);
-    expect(await readFile(planPath, 'utf8')).toContain(planSummary.planHash);
+    expect(JSON.parse(await readFile(planPath, 'utf8'))).toMatchObject({ sourceRunId: 'run-before', workPlan: { items: [{ status: 'verification' }] } });
 
     const correlated = await service.correlate(itemId);
     expect(correlated.items[itemId]!.phase).toBe('completed');
