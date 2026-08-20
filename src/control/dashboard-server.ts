@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { BackendVerificationCommand } from '../backend/executor-types.js';
 import type { MockMigrationAction } from '../backend/mock-migration.js';
@@ -12,6 +13,10 @@ import { Beta8MockAcceptanceDashboardService } from './beta8-mock-acceptance-ser
 import { beta8MockDashboardJs } from './beta8-mock-dashboard.js';
 import { beta8MockDashboardCss } from './beta8-mock-dashboard-ui.js';
 import { Beta8MockMigrationDashboardService } from './beta8-mock-migration-service.js';
+import { beta8QaDashboardJs } from './beta8-qa-dashboard.js';
+import { beta8QaDashboardCss } from './beta8-qa-dashboard-ui.js';
+import { Beta8QaHandoffService } from './beta8-qa-handoff-service.js';
+import { loadBeta8QaHandoffResultPath } from './beta8-qa-handoff-state.js';
 import {
   beta9DashboardJs,
   createBeta9SelectionFromDashboard,
@@ -35,6 +40,8 @@ export interface DashboardServerOptions {
   beta8ModelToken?: string;
   beta8MockModelEndpoint?: string;
   beta8MockModelToken?: string;
+  beta8Beta7ResultPath?: string;
+  beta8Beta7RunsRoot?: string;
   beta9PlanPath?: string;
   beta7ResultPath?: string;
   beta9RepoPath?: string;
@@ -93,11 +100,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
 function requestHostIsLoopback(request: IncomingMessage): boolean {
   const hostHeader = request.headers.host;
   if (!hostHeader) return false;
-  try {
-    return isLoopbackHost(new URL(`http://${hostHeader}`).hostname);
-  } catch {
-    return false;
-  }
+  try { return isLoopbackHost(new URL(`http://${hostHeader}`).hostname); } catch { return false; }
 }
 
 function actionRequestAllowed(request: IncomingMessage, host: string, allowActions: boolean): boolean {
@@ -106,11 +109,7 @@ function actionRequestAllowed(request: IncomingMessage, host: string, allowActio
   if (typeof site === 'string' && !['same-origin', 'same-site', 'none'].includes(site.toLowerCase())) return false;
   const origin = request.headers.origin;
   if (typeof origin === 'string') {
-    try {
-      if (new URL(origin).host !== request.headers.host) return false;
-    } catch {
-      return false;
-    }
+    try { if (new URL(origin).host !== request.headers.host) return false; } catch { return false; }
   }
   return true;
 }
@@ -140,12 +139,12 @@ function verificationCommand(record: Record<string, unknown>, key: string, requi
 
 function dashboardDocument(): string {
   return dashboardHtml()
-    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta8-mock-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
-    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta8-mock-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
+    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta8-mock-dashboard.css">\n  <link rel="stylesheet" href="/beta8-qa-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
+    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta8-mock-dashboard.js" defer></script>\n  <script src="/beta8-qa-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing|dependencies|clean working tree|acceptance|mock migration|live backend/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|multiple new|not ready|refusing|dependencies|clean working tree|acceptance|mock migration|live backend|final qa|handoff|latest reviewed/i.test(message)) return 409;
   return 400;
 }
 
@@ -173,18 +172,30 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     modelToken: options.beta8MockModelToken,
   });
   const beta8MockAcceptance = options.beta8RepoPath ? new Beta8MockAcceptanceDashboardService(options.beta8RepoPath, beta8ArtifactRoot) : undefined;
-  const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
+  const beta8FinalQa = new Beta8QaHandoffService({
+    repoPath: options.beta8RepoPath,
+    artifactRoot: beta8ArtifactRoot,
+    runsRoot: options.beta8Beta7RunsRoot ?? (options.beta8RepoPath ? path.join(options.beta8RepoPath, '.qa-runs') : undefined),
+    exactResultPath: options.beta8Beta7ResultPath,
+    beta9PlanPath,
+  });
+
+  const resolveBeta9SourceResult = async (): Promise<string | undefined> => {
+    if (options.beta7ResultPath) return options.beta7ResultPath;
+    if (!options.beta8RepoPath) return undefined;
+    return loadBeta8QaHandoffResultPath({ artifactRoot: beta8ArtifactRoot, repoPath: options.beta8RepoPath });
+  };
+  const beta9ActionConfig = (sourceResultPath: string, postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
-    sourceResultPath: options.beta7ResultPath!,
-    repoPath: options.beta9RepoPath,
+    sourceResultPath,
+    repoPath: options.beta9RepoPath ?? options.beta8RepoPath,
     modelEndpoint: options.beta9ModelEndpoint,
     postResultPath,
     artifactRoot: beta9ArtifactRoot,
     modelToken: options.beta9ModelToken,
   });
-  const beta9Actions = options.beta7ResultPath ? new Beta9DashboardActionService(actionConfig()) : undefined;
-  let dashboardActionBusy = false;
 
+  let dashboardActionBusy = false;
   const server = createServer(async (request, response) => {
     if (!authorized(request, options.token)) return json(response, 401, { error: 'unauthorized' });
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
@@ -210,10 +221,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           if (!Array.isArray(body.allowedPaths) || !body.allowedPaths.every((value) => typeof value === 'string')) throw new Error('allowedPaths must be a string array');
           return json(response, 200, await beta8Actions.approveTask(itemId, approvedBy, body.allowedPaths));
         }
-        if (pathname === '/api/beta8/propose-task') {
-          const itemId = requiredString(body, 'itemId', 120);
-          return json(response, 200, await beta8Actions.proposeTask(itemId));
-        }
+        if (pathname === '/api/beta8/propose-task') return json(response, 200, await beta8Actions.proposeTask(requiredString(body, 'itemId', 120)));
         if (pathname === '/api/beta8/execute-task') {
           const itemId = requiredString(body, 'itemId', 120);
           const proposalHash = requiredString(body, 'proposalHash', 64);
@@ -223,16 +231,14 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
         }
         if (pathname === '/api/beta8/preview-acceptance') {
           if (!beta8Acceptance) throw new Error('Beta.8 target repository is not configured for acceptance');
-          const itemId = requiredString(body, 'itemId', 120);
-          return json(response, 200, await beta8Acceptance.preview(itemId));
+          return json(response, 200, await beta8Acceptance.preview(requiredString(body, 'itemId', 120)));
         }
         if (pathname === '/api/beta8/accept-task') {
           if (!beta8Acceptance) throw new Error('Beta.8 target repository is not configured for acceptance');
           const itemId = requiredString(body, 'itemId', 120);
           const acceptanceHash = requiredString(body, 'acceptanceHash', 64);
           if (!/^[a-f0-9]{64}$/i.test(acceptanceHash)) throw new Error('acceptanceHash must be a sha256');
-          const acceptedBy = requiredString(body, 'acceptedBy', 120);
-          return json(response, 200, await beta8Acceptance.accept(itemId, acceptanceHash, acceptedBy));
+          return json(response, 200, await beta8Acceptance.accept(itemId, acceptanceHash, requiredString(body, 'acceptedBy', 120)));
         }
         if (pathname === '/api/beta8/mock-approve') {
           const recordId = requiredString(body, 'recordId', 120);
@@ -242,25 +248,14 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           if (body.seedDestination !== undefined && typeof body.seedDestination !== 'string') throw new Error('seedDestination must be a string');
           if (body.removeSourceAfterSeed !== undefined && typeof body.removeSourceAfterSeed !== 'boolean') throw new Error('removeSourceAfterSeed must be boolean');
           return json(response, 200, await beta8MockMigration.approve({
-            recordId,
-            approvedBy,
-            action,
+            recordId, approvedBy, action,
             ...(typeof body.seedDestination === 'string' && body.seedDestination.trim() ? { seedDestination: body.seedDestination.trim() } : {}),
             removeSourceAfterSeed: body.removeSourceAfterSeed === true,
           }));
         }
-        if (pathname === '/api/beta8/mock-verify-live') {
-          const recordId = requiredString(body, 'recordId', 120);
-          return json(response, 200, await beta8MockMigration.verifyLive(recordId, verificationCommand(body, 'command')!));
-        }
-        if (pathname === '/api/beta8/mock-complete') {
-          const recordId = requiredString(body, 'recordId', 120);
-          return json(response, 200, await beta8MockMigration.completeNoMutation(recordId, verificationCommand(body, 'beta7Qa', false)));
-        }
-        if (pathname === '/api/beta8/mock-propose') {
-          const recordId = requiredString(body, 'recordId', 120);
-          return json(response, 200, await beta8MockMigration.propose(recordId));
-        }
+        if (pathname === '/api/beta8/mock-verify-live') return json(response, 200, await beta8MockMigration.verifyLive(requiredString(body, 'recordId', 120), verificationCommand(body, 'command')!));
+        if (pathname === '/api/beta8/mock-complete') return json(response, 200, await beta8MockMigration.completeNoMutation(requiredString(body, 'recordId', 120), verificationCommand(body, 'beta7Qa', false)));
+        if (pathname === '/api/beta8/mock-propose') return json(response, 200, await beta8MockMigration.propose(requiredString(body, 'recordId', 120)));
         if (pathname === '/api/beta8/mock-execute') {
           const recordId = requiredString(body, 'recordId', 120);
           const proposalHash = requiredString(body, 'proposalHash', 64);
@@ -270,24 +265,26 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
         }
         if (pathname === '/api/beta8/mock-preview-acceptance') {
           if (!beta8MockAcceptance) throw new Error('Beta.8 target repository is not configured for mock acceptance');
-          const recordId = requiredString(body, 'recordId', 120);
-          return json(response, 200, await beta8MockAcceptance.preview(recordId));
+          return json(response, 200, await beta8MockAcceptance.preview(requiredString(body, 'recordId', 120)));
         }
         if (pathname === '/api/beta8/mock-accept') {
           if (!beta8MockAcceptance) throw new Error('Beta.8 target repository is not configured for mock acceptance');
           const recordId = requiredString(body, 'recordId', 120);
           const acceptanceHash = requiredString(body, 'acceptanceHash', 64);
           if (!/^[a-f0-9]{64}$/i.test(acceptanceHash)) throw new Error('acceptanceHash must be a sha256');
-          const acceptedBy = requiredString(body, 'acceptedBy', 120);
-          return json(response, 200, await beta8MockAcceptance.accept(recordId, acceptanceHash, acceptedBy));
+          return json(response, 200, await beta8MockAcceptance.accept(recordId, acceptanceHash, requiredString(body, 'acceptedBy', 120)));
+        }
+        if (pathname === '/api/beta8/run-final-qa') return json(response, 200, await beta8FinalQa.run(verificationCommand(body, 'command')!));
+        if (pathname === '/api/beta8/send-findings-beta9') {
+          if (!Array.isArray(body.fingerprints) || !body.fingerprints.every((value) => typeof value === 'string')) throw new Error('fingerprints must be a string array');
+          if (body.project !== undefined && typeof body.project !== 'string') throw new Error('project must be a string');
+          return json(response, 201, await beta8FinalQa.sendToBeta9(body.fingerprints, typeof body.project === 'string' ? body.project : undefined));
         }
         return json(response, 404, { error: 'unknown Beta.8 dashboard action' });
       } catch (error: unknown) {
         const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
         return json(response, actionErrorStatus(message), { error: message });
-      } finally {
-        dashboardActionBusy = false;
-      }
+      } finally { dashboardActionBusy = false; }
     }
 
     if (request.method === 'POST' && pathname.startsWith('/api/beta9/')) {
@@ -296,26 +293,23 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
       dashboardActionBusy = true;
       try {
         const body = objectBody(await readJsonBody(request));
+        const sourceResultPath = await resolveBeta9SourceResult();
         if (pathname === '/api/beta9/select') {
-          if (!options.beta7ResultPath) return json(response, 409, { error: 'Beta.7 result path is not configured' });
+          if (!sourceResultPath) return json(response, 409, { error: 'Beta.7 result path is not configured or available from Beta.8 final QA' });
           if (!Array.isArray(body.fingerprints) || !body.fingerprints.every((value) => typeof value === 'string')) throw new Error('fingerprints must be a string array');
           if (body.project !== undefined && typeof body.project !== 'string') throw new Error('project must be a string');
-          const summary = await createBeta9SelectionFromDashboard({
-            resultPath: options.beta7ResultPath,
+          return json(response, 201, await createBeta9SelectionFromDashboard({
+            resultPath: sourceResultPath,
             planPath: beta9PlanPath,
             fingerprints: body.fingerprints,
             project: typeof body.project === 'string' ? body.project : undefined,
-          });
-          return json(response, 201, summary);
+          }));
         }
-        if (!beta9Actions || !options.beta7ResultPath) return json(response, 409, { error: 'Beta.7 source result is not configured for Beta.9 actions' });
+        if (!sourceResultPath) return json(response, 409, { error: 'Beta.7 source result is not configured for Beta.9 actions' });
+        const beta9Actions = new Beta9DashboardActionService(beta9ActionConfig(sourceResultPath));
         const itemId = requiredString(body, 'itemId', 120);
         if (pathname === '/api/beta9/plan') return json(response, 200, await beta9Actions.generateFixPlan(itemId));
-        if (pathname === '/api/beta9/approve') {
-          const planHash = requiredString(body, 'planHash', 64);
-          const approvedBy = requiredString(body, 'approvedBy', 120);
-          return json(response, 200, await beta9Actions.approveFix(itemId, planHash, approvedBy));
-        }
+        if (pathname === '/api/beta9/approve') return json(response, 200, await beta9Actions.approveFix(itemId, requiredString(body, 'planHash', 64), requiredString(body, 'approvedBy', 120)));
         if (pathname === '/api/beta9/execute') {
           const planHash = requiredString(body, 'planHash', 64);
           if (body.confirmWrite !== true) throw new Error('execute requires confirmWrite=true');
@@ -329,58 +323,55 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           const discovered = await discoverFreshBeta7Result({
             runsRoot: options.beta9PostResultsRoot,
             artifactRoot: beta9ArtifactRoot,
-            sourceResultPath: options.beta7ResultPath,
+            sourceResultPath,
             sourceRunId: planSummary.sourceRunId,
             itemId,
           });
-          const correlator = new Beta9DashboardActionService(actionConfig(discovered.path));
-          return json(response, 200, await correlator.correlate(itemId));
+          return json(response, 200, await new Beta9DashboardActionService(beta9ActionConfig(sourceResultPath, discovered.path)).correlate(itemId));
         }
         if (pathname === '/api/beta9/prepare-retry') return json(response, 200, await beta9Actions.prepareRetry(itemId));
         return json(response, 404, { error: 'unknown Beta.9 dashboard action' });
       } catch (error: unknown) {
         const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
         return json(response, actionErrorStatus(message), { error: message });
-      } finally {
-        dashboardActionBusy = false;
-      }
+      } finally { dashboardActionBusy = false; }
     }
 
     if (!['GET', 'HEAD'].includes(request.method ?? '')) return json(response, 405, { error: 'dashboard mutation endpoint is not available' });
     const headOnly = request.method === 'HEAD';
     if (pathname === '/health') return json(response, 200, { ok: true });
     if (pathname === '/api/state') {
-      try {
-        return json(response, 200, await store.load());
-      } catch (error: unknown) {
-        return json(response, 500, { error: String(error) });
-      }
+      try { return json(response, 200, await store.load()); } catch (error: unknown) { return json(response, 500, { error: String(error) }); }
     }
     if (pathname === '/api/beta8') {
-      const [summary, acceptance, mockMigration, mockAcceptance] = await Promise.all([
+      const [summary, acceptance, mockMigration, mockAcceptance, finalQa] = await Promise.all([
         beta8Actions.summary(),
         beta8Acceptance ? beta8Acceptance.summary() : Promise.resolve({ available: false, items: {} }),
         beta8MockMigration.summary(),
         beta8MockAcceptance ? beta8MockAcceptance.summary() : Promise.resolve({ available: false, items: {} }),
+        beta8FinalQa.summary(),
       ]);
       return json(response, 200, {
         ...summary,
         acceptance,
         mockMigration: { ...mockMigration, acceptance: mockAcceptance },
+        finalQa,
         actionsAllowed: actionRequestAllowed(request, host, allowActions),
       });
     }
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/api/beta9/actions') {
-      if (!beta9Actions) return json(response, 200, { available: false, busy: false, configuration: { repo: false, model: false, postResult: false }, items: {} });
-      const summary = await beta9Actions.summary();
+      const sourceResultPath = await resolveBeta9SourceResult();
+      if (!sourceResultPath) return json(response, 200, { available: false, busy: false, configuration: { repo: false, model: false, postResult: false }, items: {} });
+      const summary = await new Beta9DashboardActionService(beta9ActionConfig(sourceResultPath)).summary();
       if (options.beta9PostResultsRoot && !options.beta9PostResultPath) summary.configuration.postResult = true;
       return json(response, 200, summary);
     }
     if (pathname === '/api/beta9/findings') {
-      if (!options.beta7ResultPath) return json(response, 200, { available: false, actionsAllowed: false });
+      const sourceResultPath = await resolveBeta9SourceResult();
+      if (!sourceResultPath) return json(response, 200, { available: false, actionsAllowed: false });
       const [source, plan] = await Promise.all([
-        loadBeta9FindingSource(options.beta7ResultPath, beta9PlanPath),
+        loadBeta9FindingSource(sourceResultPath, beta9PlanPath),
         loadBeta9DashboardSummary(beta9PlanPath),
       ]);
       return json(response, 200, { ...source, actionsAllowed: actionRequestAllowed(request, host, allowActions) && !plan.available });
@@ -388,10 +379,12 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     if (pathname === '/dashboard.css') return text(response, 200, 'text/css; charset=utf-8', dashboardCss(), headOnly);
     if (pathname === '/beta8-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8DashboardCss(), headOnly);
     if (pathname === '/beta8-mock-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8MockDashboardCss(), headOnly);
+    if (pathname === '/beta8-qa-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8QaDashboardCss(), headOnly);
     if (pathname === '/beta9-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta9DashboardCss(), headOnly);
     if (pathname === '/dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', dashboardJs(), headOnly);
     if (pathname === '/beta8-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8DashboardJs(), headOnly);
     if (pathname === '/beta8-mock-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8MockDashboardJs(), headOnly);
+    if (pathname === '/beta8-qa-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8QaDashboardJs(), headOnly);
     if (pathname === '/beta9-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta9DashboardJs(), headOnly);
     if (pathname === '/') {
       response.writeHead(200, {
