@@ -22,11 +22,19 @@ function normalizeGitPath(value: string): string {
   return value.replace(/^\.\//, '').replace(/\\/g, '/');
 }
 
+function safeBranchPrefix(value: string): string {
+  const normalized = value.replace(/\/+$/, '');
+  if (!/^aiqa\/[a-z0-9_-]{1,30}$/.test(normalized)) throw new Error('workspace branch prefix must match aiqa/<bounded-name>');
+  return normalized;
+}
+
 export class LocalGitBackendWorkspace implements BackendExecutionWorkspace {
   private readonly root: string;
+  private readonly branchPrefix: string;
 
-  constructor(rootDir: string) {
+  constructor(rootDir: string, branchPrefix = 'aiqa/backend') {
     this.root = path.resolve(rootDir);
+    this.branchPrefix = safeBranchPrefix(branchPrefix);
   }
 
   async currentBranch(): Promise<string> {
@@ -83,9 +91,9 @@ export class LocalGitBackendWorkspace implements BackendExecutionWorkspace {
   async createBranch(itemId: string): Promise<string> {
     const normalized = itemId.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 60).replace(/^-|-$/g, '');
     if (!normalized) throw new Error('work item id cannot produce a safe branch name');
-    const branch = `aiqa/backend/${normalized}`;
+    const branch = `${this.branchPrefix}/${normalized}`;
     const result = await this.exec('git', ['switch', '-c', branch], true);
-    if (result.exitCode !== 0) throw new Error(`unable to create isolated backend branch: ${result.stderr}`);
+    if (result.exitCode !== 0) throw new Error(`unable to create isolated work branch: ${result.stderr}`);
     return branch;
   }
 
