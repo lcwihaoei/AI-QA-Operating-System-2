@@ -67,6 +67,8 @@ export class HttpBeta9FixModel implements Beta9FixPlanningModel {
           noFileDeletion: true,
           targetedRegressionAndBeta7Required: true,
           doNotDisableSecurityControlsToPassTests: true,
+          retryMustUseFreshPostQaEvidence: true,
+          doNotRepeatPriorFailedApproachWithoutNewEvidence: true,
         },
         context: safeContext,
       }),
