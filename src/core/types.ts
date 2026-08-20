@@ -20,6 +20,7 @@ export interface QaRunOptions {
   sameOriginOnly: boolean;
   riskMode: RiskMode;
   visualViewports: VisualViewportName[];
+  routeSeeds?: string[];
   plannerEndpoint?: string;
   plannerToken?: string;
   visualEndpoint?: string;
