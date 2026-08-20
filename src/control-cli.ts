@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from 'node:path';
 import { Command } from 'commander';
 import { ControlPlaneStore } from './control/control-plane.js';
 import { isLoopbackHost, startDashboard } from './control/dashboard-server.js';
@@ -11,7 +12,8 @@ program
   .option('--beta7-result <file>', 'optional source Beta.7 result used to display/select findings and correlate fixes')
   .option('--beta9-repo <path>', 'optional local target git checkout for governed Beta.9 planning/execution')
   .option('--beta9-model-endpoint <url>', 'optional provider-neutral Beta.9 fix-plan model gateway')
-  .option('--beta9-post-result <file>', 'optional fresh post-fix Beta.7 result used for correlation')
+  .option('--beta9-post-result <file>', 'optional exact fresh post-fix Beta.7 result; overrides safe auto-discovery')
+  .option('--beta9-post-results-root <dir>', 'optional Beta.7 run root for unambiguous fresh-result auto-discovery; defaults to <beta9-repo>/.qa-runs when a target repo is configured')
   .option('--beta9-artifacts <dir>', 'Beta.9 dashboard artifact root', '.qa-beta9')
   .option('--allow-actions', 'allow explicit loopback-only Beta.9 actions; repository mutation still requires reviewed plan approval and write confirmation', false)
   .option('--host <host>', 'bind host', '127.0.0.1')
@@ -26,6 +28,7 @@ if (!loopback && raw.allowRemote !== true) throw new Error('remote dashboard bin
 if (!loopback && raw.allowActions === true) throw new Error('--allow-actions is restricted to a loopback dashboard');
 const token = loopback ? undefined : process.env.AIQA_DASHBOARD_TOKEN;
 if (!loopback && !token) throw new Error('remote dashboard bind requires AIQA_DASHBOARD_TOKEN');
+const postResultsRoot = raw.beta9PostResultsRoot ?? (raw.beta9Repo ? path.join(raw.beta9Repo, '.qa-runs') : undefined);
 const started = await startDashboard(new ControlPlaneStore(raw.state), {
   host: raw.host,
   port,
@@ -35,6 +38,7 @@ const started = await startDashboard(new ControlPlaneStore(raw.state), {
   beta9RepoPath: raw.beta9Repo,
   beta9ModelEndpoint: raw.beta9ModelEndpoint,
   beta9PostResultPath: raw.beta9PostResult,
+  beta9PostResultsRoot: postResultsRoot,
   beta9ArtifactRoot: raw.beta9Artifacts,
   beta9ModelToken: process.env.AIQA_BETA9_TOKEN ?? process.env.AIQA_FIX_TOKEN,
   allowActions: raw.allowActions === true,
