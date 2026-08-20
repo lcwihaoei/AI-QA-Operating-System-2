@@ -13,7 +13,7 @@ afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new 
 function qaResult(): QaRunResult {
   return {
     runId: 'run-1', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z', visitedUrls: ['https://example.test'], actions: 3,
-    events: [], findings: [{ id: 'BUG-1', kind: 'assertion', severity: 'high', title: 'broken', url: 'https://example.test', message: 'broken', reproduction: [], evidence: [], fingerprint: 'f1' }],
+    events: [], findings: [{ id: 'BUG-1', kind: 'assertion', severity: 'high', title: 'broken', url: 'https://example.test', message: 'broken', reproduction: ['open page'], evidence: ['secret-ish-evidence-path'], fingerprint: 'f1' }],
     coverage: { score: 75, pageCoverage: 80, interactionCoverage: 70, pages: [], gaps: [] },
     visualBaseline: { enabled: false, existed: false, newSignals: 0, persistentSignals: 0, resolvedSignals: 0, updated: false },
     api: { enabled: false, mode: 'off', operationsDiscovered: 0, operationsTested: 0, operationsSkipped: 0 },
@@ -68,9 +68,10 @@ describe('management dashboard shell', () => {
     expect(js).toContain("return lang.indexOf('zh-tw')===0");
   });
 
-  it('requires a token for remote binding before opening a socket', async () => {
+  it('requires a token for remote binding and refuses remote action mode before opening a socket', async () => {
     const store = new ControlPlaneStore('/tmp/does-not-matter.json');
     await expect(startDashboard(store, { host: '0.0.0.0', port: 0 })).rejects.toThrow(/token/);
+    await expect(startDashboard(store, { host: '0.0.0.0', port: 0, token: 'test-token', allowActions: true })).rejects.toThrow(/loopback-only/);
   });
 
   it('serves external dashboard assets under a CSP without unsafe-inline', async () => {
@@ -92,7 +93,9 @@ describe('management dashboard shell', () => {
     expect(await js.text()).toContain('function setLocale');
     const beta9Js = await fetch(`http://127.0.0.1:${started.port}/beta9-dashboard.js`);
     expect(beta9Js.headers.get('content-type')).toContain('text/javascript');
-    expect(await beta9Js.text()).toContain("fetch('/api/beta9'");
+    const beta9JsText = await beta9Js.text();
+    expect(beta9JsText).toContain("fetch('/api/beta9'");
+    expect(beta9JsText).toContain("fetch('/api/beta9/select'");
     const beta9 = await fetch(`http://127.0.0.1:${started.port}/api/beta9`);
     expect(await beta9.json()).toEqual({ available: false });
   });
@@ -111,8 +114,56 @@ describe('management dashboard shell', () => {
     expect(summary.selected).toBe(1);
     expect(summary.project).toBe('dashboard-fixture');
     expect(summary.items[0]).toMatchObject({ title: 'broken', severity: 'high', kind: 'assertion', status: 'planned', approved: false, mutationAllowed: false, affectedFiles: 0, allowedPaths: 0 });
+    expect(JSON.stringify(summary)).not.toContain('secret-ish-evidence-path');
+    expect(JSON.stringify(summary)).not.toContain('open page');
     expect(JSON.stringify(summary)).not.toContain('message');
-    expect(JSON.stringify(summary)).not.toContain('reproduction');
-    expect(JSON.stringify(summary)).not.toContain('evidence');
+  });
+
+  it('keeps finding selection read-only by default and creates a plan only in explicit same-origin loopback action mode', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-dashboard-select-'));
+    const resultPath = path.join(dir, 'result.json');
+    const planPath = path.join(dir, 'plan.json');
+    await writeFile(resultPath, `${JSON.stringify(qaResult(), null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+
+    const readOnly = await startDashboard(new ControlPlaneStore(path.join(dir, 'readonly-state.json')), {
+      host: '127.0.0.1', port: 0, beta7ResultPath: resultPath, beta9PlanPath: planPath,
+    });
+    servers.push(readOnly.server);
+    const candidates = await (await fetch(`http://127.0.0.1:${readOnly.port}/api/beta9/findings`)).json() as { actionsAllowed: boolean; findings: Array<Record<string, unknown>> };
+    expect(candidates.actionsAllowed).toBe(false);
+    expect(candidates.findings[0]).toMatchObject({ fingerprint: 'f1', title: 'broken', severity: 'high', selected: false });
+    expect(JSON.stringify(candidates)).not.toContain('secret-ish-evidence-path');
+    const denied = await fetch(`http://127.0.0.1:${readOnly.port}/api/beta9/select`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fingerprints: ['f1'] }),
+    });
+    expect(denied.status).toBe(403);
+
+    const actionDir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-dashboard-action-'));
+    const actionResult = path.join(actionDir, 'result.json');
+    const actionPlan = path.join(actionDir, 'plan.json');
+    await writeFile(actionResult, `${JSON.stringify(qaResult(), null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    const writable = await startDashboard(new ControlPlaneStore(path.join(actionDir, 'state.json')), {
+      host: '127.0.0.1', port: 0, beta7ResultPath: actionResult, beta9PlanPath: actionPlan, allowActions: true,
+    });
+    servers.push(writable.server);
+    const enabled = await (await fetch(`http://127.0.0.1:${writable.port}/api/beta9/findings`)).json() as { actionsAllowed: boolean };
+    expect(enabled.actionsAllowed).toBe(true);
+    const crossSite = await fetch(`http://127.0.0.1:${writable.port}/api/beta9/select`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' }, body: JSON.stringify({ fingerprints: ['f1'] }),
+    });
+    expect(crossSite.status).toBe(403);
+    const created = await fetch(`http://127.0.0.1:${writable.port}/api/beta9/select`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, body: JSON.stringify({ fingerprints: ['f1'], project: 'dashboard-selected' }),
+    });
+    expect(created.status).toBe(201);
+    const createdSummary = await created.json() as { available: boolean; selected: number; project: string };
+    expect(createdSummary).toMatchObject({ available: true, selected: 1, project: 'dashboard-selected' });
+    const after = await (await fetch(`http://127.0.0.1:${writable.port}/api/beta9/findings`)).json() as { actionsAllowed: boolean; findings: Array<Record<string, unknown>> };
+    expect(after.actionsAllowed).toBe(false);
+    expect(after.findings[0]).toMatchObject({ fingerprint: 'f1', selected: true });
+    const overwrite = await fetch(`http://127.0.0.1:${writable.port}/api/beta9/select`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, body: JSON.stringify({ fingerprints: ['f1'] }),
+    });
+    expect(overwrite.status).toBe(409);
   });
 });
