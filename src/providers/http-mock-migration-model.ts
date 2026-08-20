@@ -38,10 +38,17 @@ export class HttpMockMigrationModel implements MockMigrationModel {
   async propose(context: MockMigrationModelContext): Promise<MockMigrationProposalDraft> {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.token) headers.authorization = `Bearer ${this.token}`;
+
+    const redactedPaths = new Set<string>();
+    const sourceContent = redact(context.source.content);
+    if (sourceContent !== context.source.content) redactedPaths.add(context.source.path);
+    const existingSeedContent = context.existingSeed ? redact(context.existingSeed.content) : undefined;
+    if (context.existingSeed && existingSeedContent !== context.existingSeed.content) redactedPaths.add(context.existingSeed.path);
+
     const safeContext = {
       ...context,
-      source: { ...context.source, content: redact(context.source.content) },
-      ...(context.existingSeed ? { existingSeed: { ...context.existingSeed, content: redact(context.existingSeed.content) } } : {}),
+      source: { ...context.source, content: sourceContent },
+      ...(context.existingSeed ? { existingSeed: { ...context.existingSeed, content: existingSeedContent! } } : {}),
     };
     const response = await fetch(this.endpoint, {
       method: 'POST',
@@ -60,6 +67,7 @@ export class HttpMockMigrationModel implements MockMigrationModel {
           noShell: true,
           noGit: true,
           noSecretsInSeedData: true,
+          redactedSourceIsReadOnly: true,
         },
         context: safeContext,
       }),
@@ -68,6 +76,14 @@ export class HttpMockMigrationModel implements MockMigrationModel {
     if (!response.ok) throw new Error(`mock migration model HTTP ${response.status}`);
     const text = await response.text();
     if (text.length > 1_500_000) throw new Error('mock migration model response exceeded 1.5 MB');
-    return proposal.parse(JSON.parse(text));
+    const parsed = proposal.parse(JSON.parse(text));
+    const touchingRedacted = parsed.changes
+      .filter((entry) => entry.operation !== 'delete' && redactedPaths.has(entry.path))
+      .map((entry) => entry.path);
+    if (touchingRedacted.length > 0) throw new Error(`mock migration model attempted to rewrite redacted source context: ${touchingRedacted.join(', ')}`);
+    if (parsed.changes.some((entry) => typeof entry.content === 'string' && entry.content.includes('[REDACTED]'))) {
+      throw new Error('mock migration model returned a redaction marker inside generated source content');
+    }
+    return parsed;
   }
 }
