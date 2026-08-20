@@ -42,9 +42,14 @@ export class HttpBeta9FixModel implements Beta9FixPlanningModel {
   async propose(context: Beta9FixModelContext): Promise<Beta9FixPlanDraft> {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.token) headers.authorization = `Bearer ${this.token}`;
+    const redactedPaths = new Set<string>();
     const safeContext = {
       ...context,
-      files: context.files.map((file) => ({ ...file, content: redact(file.content) })),
+      files: context.files.map((file) => {
+        const content = redact(file.content);
+        if (content !== file.content) redactedPaths.add(file.path);
+        return { ...file, content };
+      }),
     };
     const response = await fetch(this.endpoint, {
       method: 'POST',
@@ -69,6 +74,7 @@ export class HttpBeta9FixModel implements Beta9FixPlanningModel {
           doNotDisableSecurityControlsToPassTests: true,
           retryMustUseFreshPostQaEvidence: true,
           doNotRepeatPriorFailedApproachWithoutNewEvidence: true,
+          redactedSourceIsReadOnly: true,
         },
         context: safeContext,
       }),
@@ -77,6 +83,10 @@ export class HttpBeta9FixModel implements Beta9FixPlanningModel {
     if (!response.ok) throw new Error(`Beta.9 fix model HTTP ${response.status}`);
     const text = await response.text();
     if (text.length > 2_000_000) throw new Error('Beta.9 fix model response exceeded 2 MB');
-    return planSchema.parse(JSON.parse(text));
+    const parsed = planSchema.parse(JSON.parse(text));
+    const touchingRedacted = parsed.changes.filter((entry) => redactedPaths.has(entry.path)).map((entry) => entry.path);
+    if (touchingRedacted.length > 0) throw new Error(`Beta.9 fix model attempted to rewrite redacted source context: ${touchingRedacted.join(', ')}`);
+    if (parsed.changes.some((entry) => entry.content.includes('[REDACTED]'))) throw new Error('Beta.9 fix model returned a redaction marker inside generated source content');
+    return parsed;
   }
 }
