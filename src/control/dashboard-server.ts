@@ -8,6 +8,8 @@ import { Beta8AcceptanceDashboardService } from './beta8-acceptance-service.js';
 import { Beta8DashboardActionService } from './beta8-action-service.js';
 import { beta8DashboardJs } from './beta8-dashboard.js';
 import { beta8DashboardCss } from './beta8-dashboard-ui.js';
+import { beta8MockDashboardJs } from './beta8-mock-dashboard.js';
+import { beta8MockDashboardCss } from './beta8-mock-dashboard-ui.js';
 import { Beta8MockMigrationDashboardService } from './beta8-mock-migration-service.js';
 import {
   beta9DashboardJs,
@@ -137,8 +139,8 @@ function verificationCommand(record: Record<string, unknown>, key: string, requi
 
 function dashboardDocument(): string {
   return dashboardHtml()
-    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
-    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
+    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta8-mock-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
+    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta8-mock-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
 }
 
 function actionErrorStatus(message: string): number {
@@ -364,9 +366,11 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     }
     if (pathname === '/dashboard.css') return text(response, 200, 'text/css; charset=utf-8', dashboardCss(), headOnly);
     if (pathname === '/beta8-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8DashboardCss(), headOnly);
+    if (pathname === '/beta8-mock-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8MockDashboardCss(), headOnly);
     if (pathname === '/beta9-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta9DashboardCss(), headOnly);
     if (pathname === '/dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', dashboardJs(), headOnly);
     if (pathname === '/beta8-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8DashboardJs(), headOnly);
+    if (pathname === '/beta8-mock-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8MockDashboardJs(), headOnly);
     if (pathname === '/beta9-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta9DashboardJs(), headOnly);
     if (pathname === '/') {
       response.writeHead(200, {
