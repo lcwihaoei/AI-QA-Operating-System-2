@@ -63,10 +63,15 @@ export class LocalGitBackendWorkspace implements BackendExecutionWorkspace {
     const listed = await this.exec('git', ['ls-files'], true);
     if (listed.exitCode !== 0) throw new Error('unable to enumerate tracked source files');
     const tracked = listed.stdout.split('\n').map(normalizeGitPath).filter(Boolean).slice(0, MAX_TRACKED_FILES);
+    const evidenceReferences = item.source
+      .filter((evidence) => evidence.type === 'frontend-discovery' || evidence.type === 'source')
+      .map((evidence) => normalizeGitPath(evidence.reference))
+      .filter((relative) => tracked.includes(relative) && safeBackendPath(relative));
     const candidates = tracked.filter((relative) => {
       if (!safeBackendPath(relative)) return false;
       if (MANIFEST_FILES.has(relative) || MANIFEST_FILES.has(path.posix.basename(relative))) return true;
       if (item.affectedFiles.includes(relative)) return true;
+      if (evidenceReferences.includes(relative)) return true;
       return item.execution.allowedPaths.some((pattern) => {
         if (pattern.endsWith('/**')) {
           const base = pattern.slice(0, -3).replace(/\/$/, '');
@@ -77,6 +82,7 @@ export class LocalGitBackendWorkspace implements BackendExecutionWorkspace {
     });
 
     const preferred = [...new Set([
+      ...evidenceReferences,
       ...tracked.filter((relative) => MANIFEST_FILES.has(relative) || MANIFEST_FILES.has(path.posix.basename(relative))),
       ...item.affectedFiles,
       ...candidates,
