@@ -17,6 +17,9 @@ import { beta8QaDashboardJs } from './beta8-qa-dashboard.js';
 import { beta8QaDashboardCss } from './beta8-qa-dashboard-ui.js';
 import { Beta8QaHandoffService } from './beta8-qa-handoff-service.js';
 import { loadBeta8QaHandoffResultPath } from './beta8-qa-handoff-state.js';
+import { featurePlannerDashboardJs } from './feature-planner-dashboard.js';
+import { featurePlannerDashboardCss } from './feature-planner-dashboard-ui.js';
+import { FeaturePlannerDashboardService } from './feature-planner-service.js';
 import {
   beta9DashboardJs,
   createBeta9SelectionFromDashboard,
@@ -42,6 +45,7 @@ export interface DashboardServerOptions {
   beta8MockModelToken?: string;
   beta8Beta7ResultPath?: string;
   beta8Beta7RunsRoot?: string;
+  featureArtifactRoot?: string;
   beta9PlanPath?: string;
   beta7ResultPath?: string;
   beta9RepoPath?: string;
@@ -125,6 +129,15 @@ function requiredString(record: Record<string, unknown>, key: string, max = 500)
   return value.trim();
 }
 
+function stringArray(record: Record<string, unknown>, key: string, maxItems = 200): string[] {
+  const value = record[key];
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maxItems || !value.every((entry) => typeof entry === 'string' && entry.length <= 2_000)) {
+    throw new Error(`${key} must be an array of up to ${maxItems} bounded strings`);
+  }
+  return value as string[];
+}
+
 function verificationCommand(record: Record<string, unknown>, key: string, required = true): BackendVerificationCommand | undefined {
   const value = record[key];
   if (value === undefined && !required) return undefined;
@@ -139,12 +152,12 @@ function verificationCommand(record: Record<string, unknown>, key: string, requi
 
 function dashboardDocument(): string {
   return dashboardHtml()
-    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta8-mock-dashboard.css">\n  <link rel="stylesheet" href="/beta8-qa-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
-    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta8-mock-dashboard.js" defer></script>\n  <script src="/beta8-qa-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
+    .replace('</head>', '  <link rel="stylesheet" href="/beta8-dashboard.css">\n  <link rel="stylesheet" href="/beta8-mock-dashboard.css">\n  <link rel="stylesheet" href="/beta8-qa-dashboard.css">\n  <link rel="stylesheet" href="/feature-planner-dashboard.css">\n  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
+    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta8-mock-dashboard.js" defer></script>\n  <script src="/beta8-qa-dashboard.js" defer></script>\n  <script src="/feature-planner-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|multiple new|not ready|refusing|dependencies|clean working tree|acceptance|mock migration|live backend|final qa|handoff|latest reviewed/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|multiple new|not ready|refusing|dependencies|clean working tree|acceptance|mock migration|live backend|final qa|handoff|latest reviewed|already frozen|already exists|not ready for blueprint/i.test(message)) return 409;
   return 400;
 }
 
@@ -152,12 +165,14 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
   const beta8ArtifactRoot = options.beta8ArtifactRoot ?? '.qa-backend';
+  const featureArtifactRoot = options.featureArtifactRoot ?? '.qa-features';
   const beta9PlanPath = options.beta9PlanPath ?? '.qa-beta9/plan.json';
   const beta9ArtifactRoot = options.beta9ArtifactRoot ?? '.qa-beta9';
   const allowActions = options.allowActions === true;
   if (!isLoopbackHost(host) && !options.token) throw new Error('remote dashboard binding requires a bearer token');
   if (!isLoopbackHost(host) && allowActions) throw new Error('dashboard actions are loopback-only even when remote read access is authenticated');
 
+  const featurePlanner = new FeaturePlannerDashboardService(featureArtifactRoot);
   const beta8Actions = new Beta8DashboardActionService({
     repoPath: options.beta8RepoPath,
     artifactRoot: beta8ArtifactRoot,
@@ -199,6 +214,51 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
   const server = createServer(async (request, response) => {
     if (!authorized(request, options.token)) return json(response, 401, { error: 'unauthorized' });
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+
+    if (request.method === 'POST' && pathname.startsWith('/api/features/')) {
+      if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Feature planner dashboard actions are disabled or not same-origin loopback' });
+      if (dashboardActionBusy) return json(response, 409, { error: 'another dashboard action is already running' });
+      dashboardActionBusy = true;
+      try {
+        const body = objectBody(await readJsonBody(request));
+        if (pathname === '/api/features/create') {
+          const expectedImpact = requiredString(body, 'expectedImpact', 20);
+          const estimatedEffort = requiredString(body, 'estimatedEffort', 20);
+          if (!['high', 'medium', 'low'].includes(expectedImpact)) throw new Error('expectedImpact must be high, medium or low');
+          if (!['high', 'medium', 'low'].includes(estimatedEffort)) throw new Error('estimatedEffort must be high, medium or low');
+          return json(response, 201, await featurePlanner.create({
+            project: requiredString(body, 'project', 200),
+            title: requiredString(body, 'title', 300),
+            observation: requiredString(body, 'observation', 2_000),
+            userValue: requiredString(body, 'userValue', 2_000),
+            expectedImpact: expectedImpact as 'high' | 'medium' | 'low',
+            estimatedEffort: estimatedEffort as 'high' | 'medium' | 'low',
+            affectedAreas: stringArray(body, 'affectedAreas'),
+            designSystemConstraints: stringArray(body, 'designSystemConstraints'),
+            currentProductUnderstanding: stringArray(body, 'currentProductUnderstanding', 500),
+          }));
+        }
+        if (pathname === '/api/features/answer') {
+          if (body.confirmed !== true) throw new Error('feature planning answer requires confirmed=true');
+          return json(response, 200, await featurePlanner.answer(requiredString(body, 'questionId', 200), body.value, true));
+        }
+        if (pathname === '/api/features/blueprint') {
+          return json(response, 201, await featurePlanner.blueprint({
+            selectedAlternativeId: requiredString(body, 'selectedAlternativeId', 100),
+            userFlow: stringArray(body, 'userFlow'),
+            informationArchitecture: stringArray(body, 'informationArchitecture'),
+            frontendRequirements: stringArray(body, 'frontendRequirements'),
+            backendRequirements: stringArray(body, 'backendRequirements'),
+            dataRequirements: stringArray(body, 'dataRequirements'),
+            securityRequirements: stringArray(body, 'securityRequirements'),
+          }));
+        }
+        return json(response, 404, { error: 'unknown feature planner dashboard action' });
+      } catch (error: unknown) {
+        const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
+        return json(response, actionErrorStatus(message), { error: message });
+      } finally { dashboardActionBusy = false; }
+    }
 
     if (request.method === 'POST' && pathname.startsWith('/api/beta8/')) {
       if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Beta.8 dashboard actions are disabled or not same-origin loopback' });
@@ -343,6 +403,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     if (pathname === '/api/state') {
       try { return json(response, 200, await store.load()); } catch (error: unknown) { return json(response, 500, { error: String(error) }); }
     }
+    if (pathname === '/api/features') return json(response, 200, { ...(await featurePlanner.summary()), actionsAllowed: actionRequestAllowed(request, host, allowActions) });
     if (pathname === '/api/beta8') {
       const [summary, acceptance, mockMigration, mockAcceptance, finalQa] = await Promise.all([
         beta8Actions.summary(),
@@ -380,11 +441,13 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     if (pathname === '/beta8-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8DashboardCss(), headOnly);
     if (pathname === '/beta8-mock-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8MockDashboardCss(), headOnly);
     if (pathname === '/beta8-qa-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta8QaDashboardCss(), headOnly);
+    if (pathname === '/feature-planner-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', featurePlannerDashboardCss(), headOnly);
     if (pathname === '/beta9-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta9DashboardCss(), headOnly);
     if (pathname === '/dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', dashboardJs(), headOnly);
     if (pathname === '/beta8-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8DashboardJs(), headOnly);
     if (pathname === '/beta8-mock-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8MockDashboardJs(), headOnly);
     if (pathname === '/beta8-qa-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8QaDashboardJs(), headOnly);
+    if (pathname === '/feature-planner-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', featurePlannerDashboardJs(), headOnly);
     if (pathname === '/beta9-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta9DashboardJs(), headOnly);
     if (pathname === '/') {
       response.writeHead(200, {
