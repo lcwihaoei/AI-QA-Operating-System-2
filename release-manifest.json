@@ -1,5 +1,5 @@
 {
-  "version": "0.10.0-beta.7",
+  "version": "0.10.0-beta.9",
   "channel": "prerelease",
   "milestones": ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10"],
   "validation": {
@@ -20,6 +20,17 @@
       "evidence-report-html-escaping-relative-paths",
       "visual-viewport-video-e2e",
       "qa-manager-evidence-report-e2e",
+      "beta8-frontend-discovery-matrix",
+      "beta8-architecture-interview-validation",
+      "beta8-security-blueprint",
+      "beta8-controlled-backend-executor",
+      "beta8-source-by-source-mock-migration",
+      "beta8-final-beta7-qa-handoff",
+      "beta9-selected-finding-plan-approval-execute",
+      "beta9-post-qa-correlation-bounded-retry",
+      "beta9-safe-fresh-result-discovery",
+      "feature-planner-contract-and-dashboard-http",
+      "feature-planner-desktop-mobile-bilingual-e2e",
       "npm-pack-dry-run",
       "artifact-sha256"
     ]
