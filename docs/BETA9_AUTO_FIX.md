@@ -16,6 +16,30 @@ npm run beta9 -- select \
 
 Only selected findings become WorkItems. Every generated WorkItem starts with `mutationAllowed=false` and `approval.approved=false`.
 
+Selection plans are created immutably. The CLI refuses to silently overwrite an existing Beta.9 plan because it may already contain reviewed plans, approvals, correlations, or retry state.
+
+### Optional dashboard-assisted selection
+
+The management dashboard can expose a bounded Beta.7 finding list without exposing raw messages, reproduction steps, or evidence paths:
+
+```bash
+npm run dashboard -- \
+  --beta7-result .qa-runs/<run-id>/result.json \
+  --beta9-plan .qa-beta9/plan.json
+```
+
+This mode is read-only by default. To allow the dashboard to create the initial Beta.9 selection plan, the operator must explicitly start a **loopback-only** action mode:
+
+```bash
+npm run dashboard -- \
+  --host 127.0.0.1 \
+  --beta7-result .qa-runs/<run-id>/result.json \
+  --beta9-plan .qa-beta9/plan.json \
+  --allow-actions
+```
+
+`--allow-actions` currently authorizes only creation of a new finding-selection plan. It does **not** authorize source-code mutation, approval, execution, commit, push, or merge. Remote dashboard binding cannot enable this action mode. The POST endpoint requires JSON and rejects browser requests identified as cross-site. Existing Beta.9 plans are never overwritten by dashboard selection.
+
 ## 2. AI fix plan — still read-only
 
 The planning phase searches a bounded set of tracked source files using the selected finding's evidence and sends only that bounded context to the configured fix-plan model:
@@ -32,13 +56,21 @@ The result contains root cause, recommended change, regression risks, confidence
 
 Planning is not permission to write. The WorkItem is enriched with the proposed affected files, implementation steps, risks and tests, but remains non-mutating.
 
+Fix-plan artifacts are immutable. The default filename includes the WorkItem, attempt number and plan-hash prefix, for example:
+
+```text
+.qa-beta9/fix-plans/B9-FIX-...-attempt-1-<plan-hash-prefix>.json
+```
+
+A retry therefore creates a new reviewed artifact rather than overwriting the prior plan used by an immutable attempt record.
+
 ## 3. Human approval binds the exact reviewed plan to repository scope
 
 ```bash
 npm run beta9 -- approve-fix \
   --plan .qa-beta9/plan.json \
   --item B9-FIX-... \
-  --fix-plan .qa-beta9/fix-plans/B9-FIX-....json \
+  --fix-plan .qa-beta9/fix-plans/<immutable-fix-plan>.json \
   --confirm-plan-hash <sha256> \
   --approved-by owner \
   --allow src/components/** test/**
@@ -53,7 +85,7 @@ npm run beta9 -- execute-fix \
   --plan .qa-beta9/plan.json \
   --item B9-FIX-... \
   --repo /path/to/target \
-  --fix-plan .qa-beta9/fix-plans/B9-FIX-....json \
+  --fix-plan .qa-beta9/fix-plans/<immutable-fix-plan>.json \
   --confirm-plan-hash <sha256> \
   --attempt 1 \
   --confirm-write
@@ -129,16 +161,18 @@ The retry authorization:
 - authorizes exactly `previousAttempt + 1`;
 - resets the WorkItem to non-mutating `planned` state;
 - clears the previous allowed path scope and approval;
-- requires a completely new fix plan and a new human scope approval.
+- requires a completely new immutable fix plan and a new human scope approval.
 
-Then generate and approve a new plan normally. Attempt 2+ execution must also confirm the exact retry authorization hash:
+Retry planning receives the fresh post-QA authorization context, including prior/next attempt, source/post run and correlation hash. The provider is explicitly instructed not to repeat the prior failed approach without new evidence.
+
+Attempt 2+ execution must also confirm the exact retry authorization hash:
 
 ```bash
 npm run beta9 -- execute-fix \
   --plan .qa-beta9/plan.json \
   --item B9-FIX-... \
   --repo /path/to/target \
-  --fix-plan .qa-beta9/fix-plans/B9-FIX-...-retry.json \
+  --fix-plan .qa-beta9/fix-plans/<new-immutable-fix-plan>.json \
   --confirm-plan-hash <new-sha256> \
   --attempt 2 \
   --retry-authorization-hash <authorization-sha256> \
