@@ -39,27 +39,33 @@ function pageHtml(pathname: string): string {
 </html>`;
 }
 
-describe.skipIf(!enabled)('BrowserExplorer real Chromium regression', () => {
-  it('covers multiple route families and performs a real safe button click', async () => {
-    const server = createServer((request, response) => {
-      const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-      response.statusCode = 200;
-      response.setHeader('content-type', 'text/html; charset=utf-8');
-      response.end(pageHtml(url.pathname));
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('server address unavailable');
-    const base = `http://127.0.0.1:${address.port}`;
+async function listenFixture(): Promise<string> {
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    response.statusCode = 200;
+    response.setHeader('content-type', 'text/html; charset=utf-8');
+    response.end(pageHtml(url.pathname));
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('server address unavailable');
+  return `http://127.0.0.1:${address.port}`;
+}
 
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-browser-e2e-'));
-    tempDirs.push(dir);
-    const evidence = new EvidenceStore(dir, 'run');
-    await evidence.init();
-    const coverage = new CoverageGraph();
-    const explorer = new BrowserExplorer(evidence, new QaPlanner(coverage), coverage);
-    const options: QaRunOptions = {
+async function explorerFixture(base: string, overrides: Partial<QaRunOptions> = {}): Promise<{
+  explorer: BrowserExplorer;
+  options: QaRunOptions;
+}> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-browser-e2e-'));
+  tempDirs.push(dir);
+  const evidence = new EvidenceStore(dir, 'run');
+  await evidence.init();
+  const coverage = new CoverageGraph();
+  const explorer = new BrowserExplorer(evidence, new QaPlanner(coverage), coverage);
+  return {
+    explorer,
+    options: {
       url: `${base}/`,
       maxActions: 20,
       maxDepth: 1,
@@ -70,7 +76,15 @@ describe.skipIf(!enabled)('BrowserExplorer real Chromium regression', () => {
       riskMode: 'standard',
       visualViewports: ['desktop'],
       uxIntelligence: false,
-    };
+      ...overrides,
+    },
+  };
+}
+
+describe.skipIf(!enabled)('BrowserExplorer real Chromium regression', () => {
+  it('covers multiple route families and performs a real safe button click', async () => {
+    const base = await listenFixture();
+    const { explorer, options } = await explorerFixture(base);
 
     const result = await explorer.run(options);
     const paths = new Set(result.visitedUrls.map((value) => new URL(value).pathname));
@@ -81,5 +95,21 @@ describe.skipIf(!enabled)('BrowserExplorer real Chromium regression', () => {
     expect(result.events.some((event) => event.kind === 'planner' && Number(event.details?.selectedNavigation ?? 0) >= 3)).toBe(true);
     expect(result.events.some((event) => event.kind === 'planner' && Number(event.details?.selectedInteractions ?? 0) >= 1)).toBe(true);
     expect(result.uxSnapshots.length).toBeGreaterThanOrEqual(4);
+  }, 15_000);
+
+  it('visits an unlinked same-origin route exactly because it was supplied as a route-manifest seed', async () => {
+    const base = await listenFixture();
+    const { explorer, options } = await explorerFixture(base, {
+      routeSeeds: [`${base}/manifest-only`],
+      maxActions: 12,
+    });
+
+    const result = await explorer.run(options);
+    const paths = new Set(result.visitedUrls.map((value) => new URL(value).pathname));
+    expect(paths.has('/manifest-only')).toBe(true);
+    expect(result.events.some((event) => event.kind === 'planner' && event.details?.routeManifest === true && event.details?.seededRoutes === 1)).toBe(true);
+    expect(result.events.some((event) => event.kind === 'action'
+      && new URL(event.url).pathname === '/manifest-only'
+      && event.details?.routeManifestSeed === true)).toBe(true);
   }, 15_000);
 });
