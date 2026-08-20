@@ -2,6 +2,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { discoverFreshBeta7Result } from './beta7-result-discovery.js';
+import { beta8DashboardJs } from './beta8-dashboard.js';
+import { Beta8DashboardActionService } from './beta8-action-service.js';
 import {
   beta9DashboardJs,
   createBeta9SelectionFromDashboard,
@@ -19,6 +21,8 @@ export interface DashboardServerOptions {
   host?: string;
   port?: number;
   token?: string;
+  beta8RepoPath?: string;
+  beta8ArtifactRoot?: string;
   beta9PlanPath?: string;
   beta7ResultPath?: string;
   beta9RepoPath?: string;
@@ -113,11 +117,11 @@ function requiredString(record: Record<string, unknown>, key: string, max = 500)
 function dashboardDocument(): string {
   return dashboardHtml()
     .replace('</head>', '  <link rel="stylesheet" href="/beta9-dashboard.css">\n</head>')
-    .replace('</body>', '  <script src="/beta9-dashboard.js" defer></script>\n</body>');
+    .replace('</body>', '  <script src="/beta8-dashboard.js" defer></script>\n  <script src="/beta9-dashboard.js" defer></script>\n</body>');
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing/i.test(message)) return 409;
   return 400;
 }
 
@@ -130,6 +134,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
   if (!isLoopbackHost(host) && !options.token) throw new Error('remote dashboard binding requires a bearer token');
   if (!isLoopbackHost(host) && allowActions) throw new Error('dashboard actions are loopback-only even when remote read access is authenticated');
 
+  const beta8Actions = new Beta8DashboardActionService({ repoPath: options.beta8RepoPath, artifactRoot: options.beta8ArtifactRoot });
   const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
     sourceResultPath: options.beta7ResultPath!,
@@ -146,9 +151,33 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     if (!authorized(request, options.token)) return json(response, 401, { error: 'unauthorized' });
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
 
+    if (request.method === 'POST' && pathname.startsWith('/api/beta8/')) {
+      if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Beta.8 dashboard actions are disabled or not same-origin loopback' });
+      if (dashboardActionBusy) return json(response, 409, { error: 'another dashboard action is already running' });
+      dashboardActionBusy = true;
+      try {
+        const body = objectBody(await readJsonBody(request));
+        if (pathname === '/api/beta8/discover') return json(response, 200, await beta8Actions.discover());
+        if (pathname === '/api/beta8/answer') {
+          const questionId = requiredString(body, 'questionId', 200);
+          if (!['string', 'boolean'].includes(typeof body.value) && !Array.isArray(body.value)) throw new Error('value must be a string, string array, or boolean');
+          if (Array.isArray(body.value) && !body.value.every((value) => typeof value === 'string')) throw new Error('multi-select value must be a string array');
+          if (body.confirmed !== true) throw new Error('architecture answer requires confirmed=true');
+          return json(response, 200, await beta8Actions.answer({ questionId, value: body.value as string | string[] | boolean, confirmed: true }));
+        }
+        if (pathname === '/api/beta8/blueprint') return json(response, 200, await beta8Actions.generateBlueprint());
+        return json(response, 404, { error: 'unknown Beta.8 dashboard action' });
+      } catch (error: unknown) {
+        const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
+        return json(response, actionErrorStatus(message), { error: message });
+      } finally {
+        dashboardActionBusy = false;
+      }
+    }
+
     if (request.method === 'POST' && pathname.startsWith('/api/beta9/')) {
       if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Beta.9 dashboard actions are disabled or not same-origin loopback' });
-      if (dashboardActionBusy) return json(response, 409, { error: 'another Beta.9 dashboard action is already running' });
+      if (dashboardActionBusy) return json(response, 409, { error: 'another dashboard action is already running' });
       dashboardActionBusy = true;
       try {
         const body = objectBody(await readJsonBody(request));
@@ -212,6 +241,10 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
         return json(response, 500, { error: String(error) });
       }
     }
+    if (pathname === '/api/beta8') {
+      const summary = await beta8Actions.summary();
+      return json(response, 200, { ...summary, actionsAllowed: actionRequestAllowed(request, host, allowActions) });
+    }
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/api/beta9/actions') {
       if (!beta9Actions) return json(response, 200, { available: false, busy: false, configuration: { repo: false, model: false, postResult: false }, items: {} });
@@ -230,6 +263,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     if (pathname === '/dashboard.css') return text(response, 200, 'text/css; charset=utf-8', dashboardCss(), headOnly);
     if (pathname === '/beta9-dashboard.css') return text(response, 200, 'text/css; charset=utf-8', beta9DashboardCss(), headOnly);
     if (pathname === '/dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', dashboardJs(), headOnly);
+    if (pathname === '/beta8-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta8DashboardJs(), headOnly);
     if (pathname === '/beta9-dashboard.js') return text(response, 200, 'text/javascript; charset=utf-8', beta9DashboardJs(), headOnly);
     if (pathname === '/') {
       response.writeHead(200, {
