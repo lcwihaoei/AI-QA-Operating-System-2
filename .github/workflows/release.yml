@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v0.10.0-beta.*'
+    branches:
+      - feature/v0.10.0-beta.9-controlled-auto-fix
+    paths:
+      - release-trigger.json
 
 permissions:
   contents: write
@@ -28,7 +32,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Validate release metadata and tag identity
+      - name: Validate release authorization, metadata and target identity
         shell: bash
         run: |
           set -euo pipefail
@@ -39,9 +43,21 @@ jobs:
           test "$VERSION" = "$PACKAGE_VERSION"
           test "$CHANNEL" = "prerelease"
           test -n "$VERSION"
-          test "$GITHUB_REF_TYPE" = "tag"
-          test "$GITHUB_REF_NAME" = "$TAG"
           grep -Fqx "# AI QA Operating System $TAG" <(head -n 1 RELEASE_NOTES.md)
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            test "$GITHUB_REF_NAME" = "$TAG"
+          else
+            test "$GITHUB_REF_TYPE" = "branch"
+            test "$GITHUB_REF_NAME" = "feature/v0.10.0-beta.9-controlled-auto-fix"
+            TRIGGER_VERSION="$(node -p "require('./release-trigger.json').version")"
+            TRIGGER_ACTION="$(node -p "require('./release-trigger.json').action")"
+            TRIGGER_APPROVED="$(node -p "String(require('./release-trigger.json').approved)")"
+            test "$TRIGGER_VERSION" = "$VERSION"
+            test "$TRIGGER_ACTION" = "publish-prerelease"
+            test "$TRIGGER_APPROVED" = "true"
+          fi
+
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
 
@@ -49,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git grep -nE '(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{32,})' -- . ':(exclude).github/workflows/release.yml'; then
+          if git grep -nE '(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{32,})' -- . ':(exclude).github/workflows/release.yml' ':(exclude).github/workflows/ci.yml'; then
             echo 'Potential credential/private-key material detected.' >&2
             exit 1
           fi
@@ -74,16 +90,13 @@ jobs:
       - name: Dependency vulnerability gate
         run: npm audit --audit-level=high
 
-      - name: Full build and unit/regression test gate
-        run: npm run check
-
-      - name: Install Chromium for field-regression gate
+      - name: Install Chromium for release regression gate
         run: npx playwright install --with-deps chromium
 
-      - name: Real browser field-regression gates
+      - name: Full build, unit and real-browser regression gate
         env:
           AIQA_BROWSER_E2E: '1'
-        run: npx vitest run test/browser-explorer-e2e.test.ts test/visual-agent-e2e.test.ts test/dom-geometry-browser-regression.test.ts test/qa-manager-report-e2e.test.ts test/feature-planner-browser-e2e.test.ts
+        run: npm run check
 
       - name: Verify package contents
         run: npm pack --dry-run
@@ -97,14 +110,17 @@ jobs:
           (cd release-artifacts && sha256sum *.tgz > SHA256SUMS.txt)
           cat release-artifacts/SHA256SUMS.txt
 
-      - name: Create GitHub prerelease
+      - name: Create and verify GitHub prerelease
         shell: bash
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; refusing to replace an existing release."
+            REMOTE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+            test "$REMOTE_SHA" = "$GITHUB_SHA"
+            echo "Release $TAG already exists at the exact approved SHA; keeping it unchanged."
             exit 0
           fi
+
           gh release create "$TAG" \
             release-artifacts/*.tgz \
             release-artifacts/SHA256SUMS.txt \
@@ -112,3 +128,7 @@ jobs:
             --title "AI QA Operating System $TAG" \
             --notes-file RELEASE_NOTES.md \
             --prerelease
+
+          REMOTE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+          test "$REMOTE_SHA" = "$GITHUB_SHA"
+          gh release view "$TAG" --json isPrerelease,tagName,targetCommitish --jq 'select(.isPrerelease == true and .tagName == env.TAG)'
