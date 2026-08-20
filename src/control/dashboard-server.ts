@@ -7,6 +7,7 @@ import {
   loadBeta9DashboardSummary,
   loadBeta9FindingSource,
 } from './beta9-dashboard.js';
+import { Beta9DashboardActionService } from './beta9-action-service.js';
 import { ControlPlaneStore } from './control-plane.js';
 import { dashboardCss, dashboardHtml, dashboardJs } from './dashboard-ui.js';
 
@@ -18,9 +19,14 @@ export interface DashboardServerOptions {
   token?: string;
   beta9PlanPath?: string;
   beta7ResultPath?: string;
+  beta9RepoPath?: string;
+  beta9ModelEndpoint?: string;
+  beta9PostResultPath?: string;
+  beta9ArtifactRoot?: string;
+  beta9ModelToken?: string;
   allowActions?: boolean;
 }
-export function isLoopbackHost(host: string): boolean { return host === '127.0.0.1' || host === 'localhost' || host === '::1'; }
+export function isLoopbackHost(host: string): boolean { return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'; }
 
 function authorized(request: IncomingMessage, token: string | undefined): boolean {
   if (!token) return true;
@@ -36,6 +42,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
   });
   response.end(JSON.stringify(body));
 }
@@ -64,14 +71,49 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 
+function requestHostIsLoopback(request: IncomingMessage): boolean {
+  const hostHeader = request.headers.host;
+  if (!hostHeader) return false;
+  try {
+    return isLoopbackHost(new URL(`http://${hostHeader}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function actionRequestAllowed(request: IncomingMessage, host: string, allowActions: boolean): boolean {
-  if (!isLoopbackHost(host) || !allowActions) return false;
+  if (!isLoopbackHost(host) || !allowActions || !requestHostIsLoopback(request)) return false;
   const site = request.headers['sec-fetch-site'];
-  return typeof site !== 'string' || ['same-origin', 'same-site', 'none'].includes(site.toLowerCase());
+  if (typeof site === 'string' && !['same-origin', 'same-site', 'none'].includes(site.toLowerCase())) return false;
+  const origin = request.headers.origin;
+  if (typeof origin === 'string') {
+    try {
+      if (new URL(origin).host !== request.headers.host) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function objectBody(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('dashboard action body must be a JSON object');
+  return value as Record<string, unknown>;
+}
+
+function requiredString(record: Record<string, unknown>, key: string, max = 500): string {
+  const value = record[key];
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${key} must be a non-empty string up to ${max} characters`);
+  return value.trim();
 }
 
 function dashboardDocument(): string {
   return dashboardHtml().replace('</body>', '  <script src="/beta9-dashboard.js" defer></script>\n</body>');
+}
+
+function actionErrorStatus(message: string): number {
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state/i.test(message)) return 409;
+  return 400;
 }
 
 export async function startDashboard(store: ControlPlaneStore, options: DashboardServerOptions = {}) {
@@ -82,29 +124,55 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
   if (!isLoopbackHost(host) && !options.token) throw new Error('remote dashboard binding requires a bearer token');
   if (!isLoopbackHost(host) && allowActions) throw new Error('dashboard actions are loopback-only even when remote read access is authenticated');
 
+  const beta9Actions = options.beta7ResultPath ? new Beta9DashboardActionService({
+    planPath: beta9PlanPath,
+    sourceResultPath: options.beta7ResultPath,
+    repoPath: options.beta9RepoPath,
+    modelEndpoint: options.beta9ModelEndpoint,
+    postResultPath: options.beta9PostResultPath,
+    artifactRoot: options.beta9ArtifactRoot,
+    modelToken: options.beta9ModelToken,
+  }) : undefined;
+
   const server = createServer(async (request, response) => {
     if (!authorized(request, options.token)) return json(response, 401, { error: 'unauthorized' });
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
 
-    if (request.method === 'POST' && pathname === '/api/beta9/select') {
-      if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Beta.9 dashboard selection actions are disabled or not same-origin loopback' });
-      if (!options.beta7ResultPath) return json(response, 409, { error: 'Beta.7 result path is not configured' });
+    if (request.method === 'POST' && pathname.startsWith('/api/beta9/')) {
+      if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Beta.9 dashboard actions are disabled or not same-origin loopback' });
       try {
-        const body = await readJsonBody(request);
-        if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('selection body must be a JSON object');
-        const record = body as Record<string, unknown>;
-        if (!Array.isArray(record.fingerprints) || !record.fingerprints.every((value) => typeof value === 'string')) throw new Error('fingerprints must be a string array');
-        if (record.project !== undefined && typeof record.project !== 'string') throw new Error('project must be a string');
-        const summary = await createBeta9SelectionFromDashboard({
-          resultPath: options.beta7ResultPath,
-          planPath: beta9PlanPath,
-          fingerprints: record.fingerprints,
-          project: typeof record.project === 'string' ? record.project : undefined,
-        });
-        return json(response, 201, summary);
+        const body = objectBody(await readJsonBody(request));
+        if (pathname === '/api/beta9/select') {
+          if (!options.beta7ResultPath) return json(response, 409, { error: 'Beta.7 result path is not configured' });
+          if (!Array.isArray(body.fingerprints) || !body.fingerprints.every((value) => typeof value === 'string')) throw new Error('fingerprints must be a string array');
+          if (body.project !== undefined && typeof body.project !== 'string') throw new Error('project must be a string');
+          const summary = await createBeta9SelectionFromDashboard({
+            resultPath: options.beta7ResultPath,
+            planPath: beta9PlanPath,
+            fingerprints: body.fingerprints,
+            project: typeof body.project === 'string' ? body.project : undefined,
+          });
+          return json(response, 201, summary);
+        }
+        if (!beta9Actions) return json(response, 409, { error: 'Beta.7 source result is not configured for Beta.9 actions' });
+        const itemId = requiredString(body, 'itemId', 120);
+        if (pathname === '/api/beta9/plan') return json(response, 200, await beta9Actions.generateFixPlan(itemId));
+        if (pathname === '/api/beta9/approve') {
+          const planHash = requiredString(body, 'planHash', 64);
+          const approvedBy = requiredString(body, 'approvedBy', 120);
+          return json(response, 200, await beta9Actions.approveFix(itemId, planHash, approvedBy));
+        }
+        if (pathname === '/api/beta9/execute') {
+          const planHash = requiredString(body, 'planHash', 64);
+          if (body.confirmWrite !== true) throw new Error('execute requires confirmWrite=true');
+          return json(response, 200, await beta9Actions.executeFix(itemId, planHash, true));
+        }
+        if (pathname === '/api/beta9/correlate') return json(response, 200, await beta9Actions.correlate(itemId));
+        if (pathname === '/api/beta9/prepare-retry') return json(response, 200, await beta9Actions.prepareRetry(itemId));
+        return json(response, 404, { error: 'unknown Beta.9 dashboard action' });
       } catch (error: unknown) {
-        const message = String(error instanceof Error ? error.message : error);
-        return json(response, /already exists/i.test(message) ? 409 : 400, { error: message.slice(0, 1_000) });
+        const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
+        return json(response, actionErrorStatus(message), { error: message });
       }
     }
 
@@ -119,6 +187,10 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
       }
     }
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
+    if (pathname === '/api/beta9/actions') {
+      if (!beta9Actions) return json(response, 200, { available: false, busy: false, configuration: { repo: false, model: false, postResult: false }, items: {} });
+      return json(response, 200, await beta9Actions.summary());
+    }
     if (pathname === '/api/beta9/findings') {
       if (!options.beta7ResultPath) return json(response, 200, { available: false, actionsAllowed: false });
       const [source, plan] = await Promise.all([
