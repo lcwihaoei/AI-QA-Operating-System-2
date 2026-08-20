@@ -26,17 +26,23 @@ The verified-release workflow additionally performs repository safety scanning, 
 
 ## Release activation boundary
 
-`release.yml` is intentionally still pinned to the previously verified Beta.7 release branch while Beta.9 remains under review. Do **not** retarget that workflow to the Beta.9 branch as part of ordinary RC preparation: changing the branch filter together with release metadata can activate the release job and create the GitHub prerelease/tag.
+`release.yml` is tag-bound. Ordinary branch pushes cannot create the prerelease. The release workflow activates only for a `v0.10.0-beta.*` tag and then independently verifies that:
 
-Final release activation must therefore be an explicit separate action after operator approval. At that point:
+- `release-manifest.json` and `package.json` have the same version;
+- the channel is `prerelease`;
+- the pushed tag is exactly `v<manifest version>`;
+- the release-notes heading matches the exact tag;
+- all release safety, dependency, build/test, real-browser and packaging gates pass.
 
-1. confirm the exact Beta.9 candidate HEAD and latest green CI;
-2. retarget/prepare the verified-release workflow for the approved Beta.9 release ref;
-3. review the workflow diff before any release-triggering push;
-4. create/allow the prerelease only from the approved SHA;
+Final release activation must therefore remain an explicit separate action after operator approval. At that point:
+
+1. confirm the exact Beta.9 candidate HEAD and latest green pull-request CI;
+2. review the final release metadata and release-workflow diff;
+3. create `v0.10.0-beta.9` only on the approved candidate SHA;
+4. allow the tag-triggered verified-release workflow to finish;
 5. verify generated `.tgz`, `SHA256SUMS.txt`, tag target and GitHub prerelease metadata;
 6. do not merge or deploy unless separately approved.
 
 ## Safety boundary
 
-A release candidate may update code, tests, documentation and version metadata on the Beta.9 branch. RC preparation itself must not silently create a tag, GitHub Release, merge, deployment, production migration or external secret change.
+A release candidate may update code, tests, documentation, version metadata and release automation on the Beta.9 branch. RC preparation itself must not silently create a tag, GitHub Release, merge, deployment, production migration or external secret change.
