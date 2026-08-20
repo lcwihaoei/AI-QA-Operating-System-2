@@ -404,15 +404,28 @@ export class BrowserExplorer {
         return `${node.tagName.toLowerCase()}${id}${classes}${label ? ` "${label}"` : ''}`.slice(0, 180);
       };
 
-      const intentionallySuppressed = (element: Element): boolean => {
-        if (element.closest('[hidden],[inert],[aria-hidden="true"]')) return true;
-        let current: Element | null = element;
-        for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
-          const style = getComputedStyle(current as HTMLElement);
-          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0.01) return true;
-          if (depth > 0 && style.transform !== 'none') return true; // common closed drawer/off-canvas state
+      const isWithinCollapsedControlledRegion = (element: Element): boolean => {
+        const rect = (element as HTMLElement).getBoundingClientRect();
+        const horizontallyDisplaced = rect.right <= 0 || rect.left >= window.innerWidth;
+        if (!horizontallyDisplaced) return false;
+        const controls = Array.from(document.querySelectorAll<HTMLElement>('[aria-controls][aria-expanded="false"]'));
+        for (const control of controls) {
+          const controlledId = control.getAttribute('aria-controls');
+          if (!controlledId) continue;
+          const region = document.getElementById(controlledId);
+          if (region && (region === element || region.contains(element))) return true;
         }
         return false;
+      };
+
+      const intentionallySuppressed = (element: Element): boolean => {
+        if (element.closest('[hidden],[inert],[aria-hidden="true"],[data-state="closed"],[data-open="false"]')) return true;
+        let current: Element | null = element;
+        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+          const style = getComputedStyle(current as HTMLElement);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity || '1') <= 0.01) return true;
+        }
+        return isWithinCollapsedControlledRegion(element);
       };
 
       for (const el of Array.from(document.querySelectorAll('button, a[href], input, textarea, select')).slice(0, 250)) {
