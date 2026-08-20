@@ -106,7 +106,7 @@ describe('Beta.8 mock migration dashboard HTTP lifecycle', () => {
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
 
     const wrong = await post(base, '/api/beta8/mock-execute', { recordId, proposalHash: '0'.repeat(64), confirmWrite: true });
-    expect(wrong.status).toBe(400);
+    expect(wrong.status).toBe(409);
     expect(String(wrong.json.error)).toMatch(/latest reviewed proposal/i);
 
     const executed = await post(base, '/api/beta8/mock-execute', { recordId, proposalHash: hash, confirmWrite: true });
