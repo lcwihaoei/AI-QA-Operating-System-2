@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { discoverFreshBeta7Result } from './beta7-result-discovery.js';
+import { Beta8AcceptanceDashboardService } from './beta8-acceptance-service.js';
 import { beta8DashboardJs } from './beta8-dashboard.js';
 import { beta8DashboardCss } from './beta8-dashboard-ui.js';
 import { Beta8DashboardActionService } from './beta8-action-service.js';
@@ -124,13 +125,14 @@ function dashboardDocument(): string {
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing|dependencies|clean working tree/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing|dependencies|clean working tree|acceptance/i.test(message)) return 409;
   return 400;
 }
 
 export async function startDashboard(store: ControlPlaneStore, options: DashboardServerOptions = {}) {
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
+  const beta8ArtifactRoot = options.beta8ArtifactRoot ?? '.qa-backend';
   const beta9PlanPath = options.beta9PlanPath ?? '.qa-beta9/plan.json';
   const beta9ArtifactRoot = options.beta9ArtifactRoot ?? '.qa-beta9';
   const allowActions = options.allowActions === true;
@@ -139,10 +141,11 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
 
   const beta8Actions = new Beta8DashboardActionService({
     repoPath: options.beta8RepoPath,
-    artifactRoot: options.beta8ArtifactRoot,
+    artifactRoot: beta8ArtifactRoot,
     modelEndpoint: options.beta8ModelEndpoint,
     modelToken: options.beta8ModelToken,
   });
+  const beta8Acceptance = options.beta8RepoPath ? new Beta8AcceptanceDashboardService(options.beta8RepoPath, beta8ArtifactRoot) : undefined;
   const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
     sourceResultPath: options.beta7ResultPath!,
@@ -190,6 +193,19 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           if (!/^[a-f0-9]{64}$/i.test(proposalHash)) throw new Error('proposalHash must be a sha256');
           if (body.confirmWrite !== true) throw new Error('execute-task requires confirmWrite=true');
           return json(response, 200, await beta8Actions.executeTask(itemId, proposalHash, true));
+        }
+        if (pathname === '/api/beta8/preview-acceptance') {
+          if (!beta8Acceptance) throw new Error('Beta.8 target repository is not configured for acceptance');
+          const itemId = requiredString(body, 'itemId', 120);
+          return json(response, 200, await beta8Acceptance.preview(itemId));
+        }
+        if (pathname === '/api/beta8/accept-task') {
+          if (!beta8Acceptance) throw new Error('Beta.8 target repository is not configured for acceptance');
+          const itemId = requiredString(body, 'itemId', 120);
+          const acceptanceHash = requiredString(body, 'acceptanceHash', 64);
+          if (!/^[a-f0-9]{64}$/i.test(acceptanceHash)) throw new Error('acceptanceHash must be a sha256');
+          const acceptedBy = requiredString(body, 'acceptedBy', 120);
+          return json(response, 200, await beta8Acceptance.accept(itemId, acceptanceHash, acceptedBy));
         }
         return json(response, 404, { error: 'unknown Beta.8 dashboard action' });
       } catch (error: unknown) {
@@ -267,8 +283,11 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
       }
     }
     if (pathname === '/api/beta8') {
-      const summary = await beta8Actions.summary();
-      return json(response, 200, { ...summary, actionsAllowed: actionRequestAllowed(request, host, allowActions) });
+      const [summary, acceptance] = await Promise.all([
+        beta8Actions.summary(),
+        beta8Acceptance ? beta8Acceptance.summary() : Promise.resolve({ available: false, items: {} }),
+      ]);
+      return json(response, 200, { ...summary, acceptance, actionsAllowed: actionRequestAllowed(request, host, allowActions) });
     }
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/api/beta9/actions') {
