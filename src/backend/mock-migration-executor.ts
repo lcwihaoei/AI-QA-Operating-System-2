@@ -101,16 +101,21 @@ export function finalizeMockMigrationProposal(draft: MockMigrationProposalDraft)
   return { ...canonical, proposalHash: sha256(JSON.stringify(canonical)) };
 }
 
-function approvedRecord(plan: MockMigrationPlan, recordId: string, requireLive = true): MockMigrationRecord {
+function approvedRecordBase(plan: MockMigrationPlan, recordId: string): MockMigrationRecord {
   const validation = validateMockMigrationPlan(plan);
   if (!validation.valid) throw new Error(`invalid mock migration plan: ${JSON.stringify(validation)}`);
   const record = plan.records.find((candidate) => candidate.id === recordId);
   if (!record) throw new Error(`unknown mock migration record: ${recordId}`);
   if (!record.approval.approved || !record.approval.decisionHash || !record.selectedAction) throw new Error('mock migration record is not explicitly approved');
   if (record.approval.decisionHash !== computeMockMigrationDecisionHash(record)) throw new Error('mock migration approval is stale or invalid');
+  return record;
+}
+
+function directMutationRecord(plan: MockMigrationPlan, recordId: string): MockMigrationRecord {
+  const record = approvedRecordBase(plan, recordId);
   if (record.selectedAction === 'retain') throw new Error('retain decisions do not require repository mutation');
   if (record.selectedAction === 'rewire-only') throw new Error('rewire-only decisions must use the approved frontend integration WorkItem; direct mock mutation is disabled');
-  if (requireLive && record.requiresLiveVerification && record.status !== 'live-verified') throw new Error('live backend verification must pass before mock mutation is proposed or executed');
+  if (record.requiresLiveVerification && record.status !== 'live-verified') throw new Error('live backend verification must pass before mock mutation is proposed or executed');
   return record;
 }
 
@@ -187,24 +192,50 @@ function commandEvidence(prefix: string, command: BackendVerificationCommand): s
 export class MockMigrationExecutor {
   constructor(private readonly model: MockMigrationModel, private readonly workspace: MockMigrationWorkspace) {}
 
-  async verifyLive(plan: MockMigrationPlan, recordId: string, command: BackendVerificationCommand): Promise<{ verified: boolean; error?: string }> {
+  async verifyLive(plan: MockMigrationPlan, recordId: string, command: BackendVerificationCommand): Promise<{ verified: boolean; evidence?: string; error?: string }> {
     try {
-      const record = approvedRecord(plan, recordId, false);
+      const record = approvedRecordBase(plan, recordId);
+      if (record.selectedAction === 'retain') throw new Error('retain decisions do not require live-backend verification');
       if (record.status !== 'approved') throw new Error('mock migration record must be approved before live verification');
       const commandError = validateBackendVerificationCommand(command);
       if (commandError) throw new Error(commandError);
       const result = await this.workspace.run(command);
       if (result.exitCode !== 0) throw new Error('live backend verification command failed');
-      markMockLiveVerified(plan, recordId, [commandEvidence('live', command)]);
-      return { verified: true };
+      const evidence = commandEvidence('live', command);
+      markMockLiveVerified(plan, recordId, [evidence]);
+      return { verified: true, evidence };
     } catch (error: unknown) {
       return { verified: false, error: String(error) };
     }
   }
 
+  async completeNoMutation(plan: MockMigrationPlan, recordId: string, beta7Qa?: BackendVerificationCommand): Promise<{ completed: boolean; evidence: string[]; error?: string }> {
+    const evidence: string[] = [];
+    try {
+      const record = approvedRecordBase(plan, recordId);
+      if (record.selectedAction === 'retain') {
+        evidence.push('retain:explicitly-approved');
+        markMockMigrationCompleted(plan, recordId, evidence);
+        return { completed: true, evidence };
+      }
+      if (record.selectedAction !== 'rewire-only') throw new Error('only retain or rewire-only records can use no-mutation completion');
+      if (record.status !== 'live-verified') throw new Error('rewire-only completion requires successful live verification');
+      if (!beta7Qa) throw new Error('rewire-only completion requires a Beta.7 QA command');
+      const error = validateBackendVerificationCommand(beta7Qa);
+      if (error) throw new Error(error);
+      const result = await this.workspace.run(beta7Qa);
+      if (result.exitCode !== 0) throw new Error('rewire-only Beta.7 QA gate failed');
+      evidence.push(...record.liveVerificationEvidence, commandEvidence('beta7', beta7Qa));
+      markMockMigrationCompleted(plan, recordId, evidence);
+      return { completed: true, evidence };
+    } catch (error: unknown) {
+      return { completed: false, evidence, error: String(error) };
+    }
+  }
+
   async propose(plan: MockMigrationPlan, recordId: string): Promise<MockMigrationProposalResult> {
     try {
-      const record = approvedRecord(plan, recordId, true);
+      const record = directMutationRecord(plan, recordId);
       const context = await this.workspace.sourceContext(record);
       const draft = await this.model.propose({ record, ...context });
       const proposal = finalizeMockMigrationProposal(draft);
@@ -220,7 +251,7 @@ export class MockMigrationExecutor {
     const result: MockMigrationExecutionResult = { executed: false, targetedPassed: false, regressionPassed: false, beta7Passed: false, verified: false, rolledBack: false, evidence: [] };
     let record: MockMigrationRecord | undefined;
     try {
-      record = approvedRecord(plan, recordId, true);
+      record = directMutationRecord(plan, recordId);
       if (input.confirmProposalHash !== proposal.proposalHash) throw new Error('execution requires confirmation of the exact mock migration proposal hash');
       const errors = validateMockMigrationProposal(proposal, record);
       if (errors.length > 0) throw new Error(`mock migration proposal rejected: ${errors.join('; ')}`);

@@ -127,4 +127,21 @@ describe('Beta.8 mock migration executor', () => {
     expect(await exists(path.join(root, 'backend/seeds/users.json'))).toBe(false);
     expect((await exec('git', ['branch', '--show-current'], { cwd: root })).stdout.trim()).toBe('feature/live-backend');
   });
+
+  it('supports rewire-only inline mocks without granting direct deletion', async () => {
+    const root = await fixtureRepo();
+    const plan = buildMockMigrationPlan({
+      project: 'demo',
+      items: [{ source: 'src/pages/home.tsx', kind: 'inline-mock', proposedAction: 'retain-until-module-qa', destructive: false, requiresUserApproval: true }],
+    });
+    const record = plan.records[0]!;
+    approveMockMigrationRecord(plan, record.id, { approvedBy: 'owner', action: 'rewire-only' });
+    const executor = new MockMigrationExecutor(model(), new LocalGitMockMigrationWorkspace(root));
+    expect((await executor.completeNoMutation(plan, record.id, { program: 'npm', args: ['run', 'qa'] })).completed).toBe(false);
+    expect((await executor.verifyLive(plan, record.id, { program: 'npm', args: ['test'] })).verified).toBe(true);
+    const completed = await executor.completeNoMutation(plan, record.id, { program: 'npm', args: ['run', 'qa'] });
+    expect(completed.completed).toBe(true);
+    expect(record.status).toBe('completed');
+    expect((await executor.propose(plan, record.id)).planned).toBe(false);
+  });
 });
