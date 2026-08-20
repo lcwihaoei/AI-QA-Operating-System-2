@@ -14,6 +14,7 @@ program
   .option('--beta8-beta7-result <file>', 'optional exact Beta.7 result expected from the final Beta.8 QA command; otherwise safe fresh-result discovery is used')
   .option('--beta8-beta7-runs-root <dir>', 'optional Beta.7 run root for final Beta.8 QA discovery; defaults to <beta8-repo>/.qa-runs')
   .option('--beta8-artifacts <dir>', 'Beta.8 dashboard artifact root', '.qa-backend')
+  .option('--feature-artifacts <dir>', 'product/feature planning artifact root', '.qa-features')
   .option('--beta9-plan <file>', 'Beta.9 plan file', '.qa-beta9/plan.json')
   .option('--beta7-result <file>', 'optional source Beta.7 result used directly by Beta.9; if omitted, a completed Beta.8 final-QA handoff can provide it')
   .option('--beta9-repo <path>', 'optional local target git checkout for governed Beta.9 planning/execution; defaults to the Beta.8 repo when omitted by the dashboard server')
@@ -21,7 +22,7 @@ program
   .option('--beta9-post-result <file>', 'optional exact fresh post-fix Beta.7 result; overrides safe auto-discovery')
   .option('--beta9-post-results-root <dir>', 'optional Beta.7 run root for unambiguous fresh-result auto-discovery; defaults to <beta9-repo>/.qa-runs or <beta8-repo>/.qa-runs')
   .option('--beta9-artifacts <dir>', 'Beta.9 dashboard artifact root', '.qa-beta9')
-  .option('--allow-actions', 'allow explicit loopback-only Beta.8/Beta.9 actions; repository mutation remains separately approval-gated', false)
+  .option('--allow-actions', 'allow explicit loopback-only planning/Beta.8/Beta.9 actions; repository mutation remains separately approval-gated', false)
   .option('--host <host>', 'bind host', '127.0.0.1')
   .option('--port <number>', 'bind port', '8787')
   .option('--allow-remote', 'allow non-loopback bind when AIQA_DASHBOARD_TOKEN is also set', false);
@@ -49,6 +50,7 @@ const started = await startDashboard(new ControlPlaneStore(raw.state), {
   beta8MockModelToken: process.env.AIQA_BETA8_MOCK_TOKEN ?? process.env.AIQA_BACKEND_TOKEN,
   beta8Beta7ResultPath: raw.beta8Beta7Result,
   beta8Beta7RunsRoot: beta8RunsRoot,
+  featureArtifactRoot: raw.featureArtifacts,
   beta9PlanPath: raw.beta9Plan,
   beta7ResultPath: raw.beta7Result,
   beta9RepoPath: beta9Repo,
