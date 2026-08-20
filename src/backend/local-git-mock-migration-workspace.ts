@@ -34,6 +34,7 @@ export class LocalGitMockMigrationWorkspace implements MockMigrationWorkspace {
 
   async sourceContext(record: MockMigrationRecord): Promise<{ source: MockMigrationSourceContext; existingSeed?: MockMigrationSourceContext }> {
     const source = await this.readContext(record.source, true);
+    if (!source) throw new Error(`mock source is not available: ${record.source}`);
     const existingSeed = record.seedDestination ? await this.readContext(record.seedDestination, false) : undefined;
     return { source, ...(existingSeed ? { existingSeed } : {}) };
   }
