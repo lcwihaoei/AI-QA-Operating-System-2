@@ -49,6 +49,8 @@ export interface QaRunOptions {
   minimaxApiKey?: string;
   minimaxModel?: string;
   minimaxBaseUrl?: string;
+  evidenceReport?: boolean;
+  recordVideo?: boolean;
 }
 
 export interface ExplorationCandidate {
@@ -220,6 +222,17 @@ export interface UxLearningSummary {
   toolingError?: string;
 }
 
+export interface QaReportSummary {
+  enabled: boolean;
+  htmlPath?: string;
+  dataPath?: string;
+  markdownPath?: string;
+  videos: number;
+  findings: number;
+  uxOpportunities: number;
+  toolingError?: string;
+}
+
 export interface QaEvent {
   timestamp: string;
   kind: FindingKind | 'action' | 'snapshot' | 'planner' | 'correlation';
@@ -258,5 +271,6 @@ export interface QaRunResult {
   controlPlane?: ControlPlaneSummary;
   ux?: UxIntelligenceSummary;
   uxLearning?: UxLearningSummary;
+  report?: QaReportSummary;
   outputDir: string;
 }
