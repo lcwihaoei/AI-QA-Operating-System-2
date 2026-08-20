@@ -7,9 +7,13 @@ const program = new Command();
 program
   .name('aiqa-dashboard')
   .option('--state <file>', 'control-plane state file', '.qa-control/state.json')
-  .option('--beta9-plan <file>', 'read-only Beta.9 plan file', '.qa-beta9/plan.json')
-  .option('--beta7-result <file>', 'optional Beta.7 result file used to display/select findings')
-  .option('--allow-actions', 'allow loopback-only Beta.9 finding selection plan creation; never enables source-code mutation', false)
+  .option('--beta9-plan <file>', 'Beta.9 plan file', '.qa-beta9/plan.json')
+  .option('--beta7-result <file>', 'optional source Beta.7 result used to display/select findings and correlate fixes')
+  .option('--beta9-repo <path>', 'optional local target git checkout for governed Beta.9 planning/execution')
+  .option('--beta9-model-endpoint <url>', 'optional provider-neutral Beta.9 fix-plan model gateway')
+  .option('--beta9-post-result <file>', 'optional fresh post-fix Beta.7 result used for correlation')
+  .option('--beta9-artifacts <dir>', 'Beta.9 dashboard artifact root', '.qa-beta9')
+  .option('--allow-actions', 'allow explicit loopback-only Beta.9 actions; repository mutation still requires reviewed plan approval and write confirmation', false)
   .option('--host <host>', 'bind host', '127.0.0.1')
   .option('--port <number>', 'bind port', '8787')
   .option('--allow-remote', 'allow non-loopback bind when AIQA_DASHBOARD_TOKEN is also set', false);
@@ -28,6 +32,11 @@ const started = await startDashboard(new ControlPlaneStore(raw.state), {
   token,
   beta9PlanPath: raw.beta9Plan,
   beta7ResultPath: raw.beta7Result,
+  beta9RepoPath: raw.beta9Repo,
+  beta9ModelEndpoint: raw.beta9ModelEndpoint,
+  beta9PostResultPath: raw.beta9PostResult,
+  beta9ArtifactRoot: raw.beta9Artifacts,
+  beta9ModelToken: process.env.AIQA_BETA9_TOKEN ?? process.env.AIQA_FIX_TOKEN,
   allowActions: raw.allowActions === true,
 });
 console.log(`AI QA dashboard listening on http://${started.host}:${started.port}`);
