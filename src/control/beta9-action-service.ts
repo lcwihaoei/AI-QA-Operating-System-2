@@ -82,7 +82,7 @@ export interface Beta9DashboardActionSummary {
     message?: string;
     plan?: Beta9DashboardFixPlanSummary;
     attempt?: Beta9DashboardActionItemState['latestAttempt'];
-    correlation?: Beta9DashboardActionItemState['latestCorrelation']['report'];
+    correlation?: NonNullable<Beta9DashboardActionItemState['latestCorrelation']>['report'];
     retry?: Beta9RetryAuthorization;
   }>;
   error?: string;
