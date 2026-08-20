@@ -122,7 +122,7 @@ describe('Beta.8 dashboard HTTP workflow', () => {
     expect(JSON.stringify(proposed.json)).not.toContain('httpReady = true');
 
     const wrong = await request(base, 'POST', '/api/beta8/execute-task', { itemId, proposalHash: '0'.repeat(64), confirmWrite: true });
-    expect(wrong.status).toBe(400);
+    expect(wrong.status).toBe(409);
     expect(await readFile(path.join(repo, 'src', 'main.ts'), 'utf8')).toBe(sourceBefore);
 
     const executed = await request(base, 'POST', '/api/beta8/execute-task', { itemId, proposalHash: proposal.proposalHash, confirmWrite: true });
