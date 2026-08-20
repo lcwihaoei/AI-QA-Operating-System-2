@@ -24,6 +24,8 @@ export interface DashboardServerOptions {
   token?: string;
   beta8RepoPath?: string;
   beta8ArtifactRoot?: string;
+  beta8ModelEndpoint?: string;
+  beta8ModelToken?: string;
   beta9PlanPath?: string;
   beta7ResultPath?: string;
   beta9RepoPath?: string;
@@ -122,7 +124,7 @@ function dashboardDocument(): string {
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh|not ready|refusing|dependencies|clean working tree/i.test(message)) return 409;
   return 400;
 }
 
@@ -135,7 +137,12 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
   if (!isLoopbackHost(host) && !options.token) throw new Error('remote dashboard binding requires a bearer token');
   if (!isLoopbackHost(host) && allowActions) throw new Error('dashboard actions are loopback-only even when remote read access is authenticated');
 
-  const beta8Actions = new Beta8DashboardActionService({ repoPath: options.beta8RepoPath, artifactRoot: options.beta8ArtifactRoot });
+  const beta8Actions = new Beta8DashboardActionService({
+    repoPath: options.beta8RepoPath,
+    artifactRoot: options.beta8ArtifactRoot,
+    modelEndpoint: options.beta8ModelEndpoint,
+    modelToken: options.beta8ModelToken,
+  });
   const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
     sourceResultPath: options.beta7ResultPath!,
@@ -167,6 +174,23 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           return json(response, 200, await beta8Actions.answer({ questionId, value: body.value as string | string[] | boolean, confirmed: true }));
         }
         if (pathname === '/api/beta8/blueprint') return json(response, 200, await beta8Actions.generateBlueprint());
+        if (pathname === '/api/beta8/approve-task') {
+          const itemId = requiredString(body, 'itemId', 120);
+          const approvedBy = requiredString(body, 'approvedBy', 120);
+          if (!Array.isArray(body.allowedPaths) || !body.allowedPaths.every((value) => typeof value === 'string')) throw new Error('allowedPaths must be a string array');
+          return json(response, 200, await beta8Actions.approveTask(itemId, approvedBy, body.allowedPaths));
+        }
+        if (pathname === '/api/beta8/propose-task') {
+          const itemId = requiredString(body, 'itemId', 120);
+          return json(response, 200, await beta8Actions.proposeTask(itemId));
+        }
+        if (pathname === '/api/beta8/execute-task') {
+          const itemId = requiredString(body, 'itemId', 120);
+          const proposalHash = requiredString(body, 'proposalHash', 64);
+          if (!/^[a-f0-9]{64}$/i.test(proposalHash)) throw new Error('proposalHash must be a sha256');
+          if (body.confirmWrite !== true) throw new Error('execute-task requires confirmWrite=true');
+          return json(response, 200, await beta8Actions.executeTask(itemId, proposalHash, true));
+        }
         return json(response, 404, { error: 'unknown Beta.8 dashboard action' });
       } catch (error: unknown) {
         const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
