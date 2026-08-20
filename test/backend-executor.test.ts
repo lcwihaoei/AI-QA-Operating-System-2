@@ -39,7 +39,7 @@ describe('Beta.8 controlled backend executor', () => {
     expect(validateBackendVerificationCommand({ program: 'python3', args: ['-c', 'print(1)'] })).toMatch(/restricted/);
   });
 
-  it('executes only the exact reviewed proposal hash on an isolated git branch', async () => {
+  it('executes only the exact reviewed proposal hash on an isolated git branch and records the attempt', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'aiqa-beta8-exec-'));
     cleanup.push(root);
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'demo', private: true, scripts: { test: 'node -e "process.exit(0)"', build: 'node -e "process.exit(0)"' } }, null, 2));
@@ -72,12 +72,42 @@ describe('Beta.8 controlled backend executor', () => {
     const wrong = await executor.execute(plan, 'B8-FND-001', planned.proposal!, { confirmProposalHash: '0'.repeat(64) });
     expect(wrong.verified).toBe(false);
     expect(wrong.error).toMatch(/exact proposal hash/);
+    expect(wrong.attemptRecord).toMatchObject({ outcome: 'rejected', rollbackState: 'not-started', changedFiles: [] });
 
     const result = await executor.execute(plan, 'B8-FND-001', planned.proposal!, { confirmProposalHash: planned.proposal!.proposalHash });
     expect(result).toMatchObject({ executed: true, targetedPassed: true, regressionPassed: true, beta7Passed: true, verified: true, rolledBack: false });
+    expect(result.attemptRecord).toMatchObject({
+      executorVersion: 'beta8-controlled-executor-v1', workItemId: 'B8-FND-001', attempt: 1, outcome: 'verified', rollbackState: 'not-needed',
+      changedFiles: [{ operation: 'create', path: 'backend/app.ts' }],
+      testResults: { targetedPassed: true, regressionPassed: true, beta7Passed: true },
+    });
+    expect(result.attemptRecord.commandsExecuted.map((entry) => entry.stage)).toEqual(['targeted', 'regression']);
     expect(plan.items[0]!.status).toBe('completed');
     expect((await exec('git', ['branch', '--show-current'], { cwd: root })).stdout.trim()).toBe('aiqa/backend/b8-fnd-001');
     expect(await readFile(path.join(root, 'backend/app.ts'), 'utf8')).toContain('ready = true');
+  });
+
+  it('rolls back generated files and records failed verification', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'aiqa-beta8-rollback-'));
+    cleanup.push(root);
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'demo', private: true, scripts: { test: 'node -e "process.exit(1)"', build: 'node -e "process.exit(0)"' } }, null, 2));
+    await exec('git', ['init'], { cwd: root });
+    await exec('git', ['config', 'user.email', 'qa@example.test'], { cwd: root });
+    await exec('git', ['config', 'user.name', 'QA Test'], { cwd: root });
+    await exec('git', ['add', 'package.json'], { cwd: root });
+    await exec('git', ['commit', '-m', 'fixture'], { cwd: root });
+    await exec('git', ['switch', '-c', 'feature/integration'], { cwd: root });
+    const plan = approvedPlan();
+    const model: BackendImplementationModel = { async propose(context) { return { schemaVersion: 1, workItemId: context.workItem.id, scopeHash: context.workItem.approval.scopeHash!, summary: 'fail test', changes: [{ operation: 'create', path: 'backend/fail.ts', content: 'export {};\n' }], targetedTests: [{ program: 'npm', args: ['test'] }], regression: { program: 'npm', args: ['run', 'build'] } }; } };
+    const executor = new BackendTaskExecutor(model, new LocalGitBackendWorkspace(root));
+    const planned = await executor.propose(plan, 'B8-FND-001');
+    const result = await executor.execute(plan, 'B8-FND-001', planned.proposal!, { confirmProposalHash: planned.proposal!.proposalHash });
+    expect(result).toMatchObject({ executed: true, verified: false, rolledBack: true });
+    expect(result.attemptRecord).toMatchObject({ outcome: 'rolled-back', rollbackState: 'completed' });
+    expect(result.attemptRecord.commandsExecuted[0]).toMatchObject({ stage: 'targeted', exitCode: 1 });
+    expect(plan.items[0]!.status).toBe('blocked');
+    expect((await exec('git', ['branch', '--show-current'], { cwd: root })).stdout.trim()).toBe('feature/integration');
+    await expect(readFile(path.join(root, 'backend/fail.ts'), 'utf8')).rejects.toThrow();
   });
 
   it('rejects model changes outside the human-approved path scope', async () => {

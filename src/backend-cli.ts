@@ -15,6 +15,18 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
+async function writeImmutableJson(filePath: string, value: unknown): Promise<void> {
+  const absolute = path.resolve(filePath);
+  await mkdir(path.dirname(absolute), { recursive: true });
+  try {
+    await writeFile(absolute, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  } catch (error: unknown) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code) : '';
+    if (code === 'EEXIST') throw new Error(`immutable execution record already exists: ${absolute}`);
+    throw error;
+  }
+}
+
 async function readJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await readFile(path.resolve(filePath), 'utf8')) as T;
 }
@@ -130,11 +142,11 @@ program.command('execute-task')
   .requiredOption('--repo <path>', 'local target git checkout')
   .requiredOption('--proposal <path>', 'reviewed proposal JSON path')
   .requiredOption('--confirm-proposal-hash <sha256>', 'exact reviewed proposal hash')
-  .option('--beta7-command <path>', 'optional JSON verification command controlled by the operator')
+  .option('--beta7-command <path>', 'operator-reviewed JSON command for the Beta.7 QA gate')
   .option('--attempt <count>', '1-based attempt number', (value) => Number.parseInt(value, 10), 1)
   .option('--confirm-write', 'required acknowledgement before target repository mutation', false)
-  .option('--result-out <path>', 'execution result output path')
-  .action(async (options: { plan: string; item: string; repo: string; proposal: string; confirmProposalHash: string; beta7Command?: string; attempt: number; confirmWrite: boolean; resultOut?: string }) => {
+  .option('--attempt-record-out <path>', 'immutable attempt record path')
+  .action(async (options: { plan: string; item: string; repo: string; proposal: string; confirmProposalHash: string; beta7Command?: string; attempt: number; confirmWrite: boolean; attemptRecordOut?: string }) => {
     if (options.confirmWrite !== true) throw new Error('execute-task requires --confirm-write');
     const plan = await readJson<WorkPlan>(options.plan);
     const proposal = await readJson<BackendTaskProposal>(options.proposal);
@@ -142,8 +154,10 @@ program.command('execute-task')
     const executor = new BackendTaskExecutor(unusedModel, new LocalGitBackendWorkspace(options.repo));
     const result = await executor.execute(plan, options.item, proposal, { confirmProposalHash: options.confirmProposalHash, attempt: options.attempt, beta7Qa });
     await writeJson(path.resolve(options.plan), plan);
-    if (options.resultOut) await writeJson(path.resolve(options.resultOut), result);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    const defaultAttemptPath = `.qa-backend/attempts/${options.item}-attempt-${options.attempt}-${proposal.proposalHash.slice(0, 12)}.json`;
+    const attemptPath = path.resolve(options.attemptRecordOut ?? defaultAttemptPath);
+    await writeImmutableJson(attemptPath, result.attemptRecord);
+    process.stdout.write(`${JSON.stringify({ ...result, attemptRecordPath: attemptPath }, null, 2)}\n`);
     if (!result.verified) process.exitCode = 2;
   });
 

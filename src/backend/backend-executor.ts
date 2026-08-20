@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { assertWorkPlanSafe, computeWorkItemScopeHash, type WorkItem, type WorkPlan } from '../planning/work-item.js';
 import type {
+  BackendExecutionAttemptRecord,
   BackendExecutionResult,
   BackendExecutionWorkspace,
   BackendImplementationModel,
@@ -154,12 +155,38 @@ function approvedItem(plan: WorkPlan, itemId: string): WorkItem {
   assertWorkPlanSafe(plan);
   const item = plan.items.find((candidate) => candidate.id === itemId);
   if (!item) throw new Error(`unknown work item: ${itemId}`);
+  if (item.kind === 'qa') throw new Error('QA work items are verification-only and are not executed by the mutating backend executor');
   if (item.status !== 'approved' || !item.approval.required || !item.approval.approved || !item.execution.mutationAllowed) throw new Error('work item is not approved for mutation');
   const expectedScopeHash = computeWorkItemScopeHash(item, item.execution.allowedPaths);
   if (item.approval.scopeHash !== expectedScopeHash) throw new Error('work item approval scope hash is stale or invalid');
   const incomplete = item.dependencies.filter((dependency) => plan.items.find((candidate) => candidate.id === dependency)?.status !== 'completed');
   if (incomplete.length > 0) throw new Error(`work item dependencies are not completed: ${incomplete.join(', ')}`);
   return item;
+}
+
+function newAttempt(proposal: BackendTaskProposal, attempt: number): BackendExecutionAttemptRecord {
+  const startedAt = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    executorVersion: 'beta8-controlled-executor-v1',
+    workItemId: proposal.workItemId,
+    scopeHash: proposal.scopeHash,
+    proposalHash: proposal.proposalHash,
+    attempt,
+    startedAt,
+    finishedAt: startedAt,
+    changedFiles: [],
+    commandsExecuted: [],
+    testResults: { targetedPassed: false, regressionPassed: false, beta7Passed: false },
+    evidenceReferences: [],
+    rollbackState: 'not-started',
+    outcome: 'rejected',
+  };
+}
+
+function finishAttempt(record: BackendExecutionAttemptRecord, result: Pick<BackendExecutionResult, 'targetedPassed' | 'regressionPassed' | 'beta7Passed'>): void {
+  record.finishedAt = new Date().toISOString();
+  record.testResults = { targetedPassed: result.targetedPassed, regressionPassed: result.regressionPassed, beta7Passed: result.beta7Passed };
 }
 
 export class BackendTaskExecutor {
@@ -186,12 +213,15 @@ export class BackendTaskExecutor {
     proposal: BackendTaskProposal,
     input: { confirmProposalHash: string; attempt?: number; beta7Qa?: BackendVerificationCommand },
   ): Promise<BackendExecutionResult> {
-    const result: BackendExecutionResult = { executed: false, targetedPassed: false, regressionPassed: false, beta7Passed: false, verified: false, rolledBack: false };
+    const attemptNumber = input.attempt ?? 1;
+    const attemptRecord = newAttempt(proposal, attemptNumber);
+    const result: BackendExecutionResult = { executed: false, targetedPassed: false, regressionPassed: false, beta7Passed: false, verified: false, rolledBack: false, attemptRecord };
     let item: WorkItem | undefined;
+    let originalBranch: string | undefined;
+    let executionBranch: string | undefined;
     try {
       item = approvedItem(plan, itemId);
-      const attempt = input.attempt ?? 1;
-      if (!Number.isInteger(attempt) || attempt < 1 || attempt > item.execution.maxAttempts) throw new Error(`attempt must be between 1 and ${item.execution.maxAttempts}`);
+      if (!Number.isInteger(attemptNumber) || attemptNumber < 1 || attemptNumber > item.execution.maxAttempts) throw new Error(`attempt must be between 1 and ${item.execution.maxAttempts}`);
       if (!input.confirmProposalHash || input.confirmProposalHash !== proposal.proposalHash) throw new Error('execution requires confirmation of the exact proposal hash');
       const errors = validateBackendTaskProposal(proposal, item);
       if (errors.length > 0) throw new Error(`backend proposal rejected: ${errors.join('; ')}`);
@@ -202,46 +232,66 @@ export class BackendTaskExecutor {
         if (beta7Error) throw new Error(beta7Error);
       }
 
-      const originalBranch = await this.workspace.currentBranch();
+      originalBranch = await this.workspace.currentBranch();
+      attemptRecord.originalBranch = originalBranch;
       if (['main', 'master', 'trunk'].includes(originalBranch.toLowerCase())) throw new Error('execution refuses to start from a default branch; use a disposable feature branch checkout');
       if (item.execution.requireCleanWorkspace && !(await this.workspace.isClean())) throw new Error('execution requires a clean working tree');
 
-      const branch = await this.workspace.createBranch(item.id);
-      result.branch = branch;
+      executionBranch = await this.workspace.createBranch(item.id);
+      result.branch = executionBranch;
+      attemptRecord.executionBranch = executionBranch;
       item.status = 'in-progress';
-      try {
-        for (const change of proposal.changes) await this.workspace.applyChange(change, item);
-        result.executed = true;
 
-        for (const command of proposal.targetedTests) {
-          const tested = await this.workspace.run(command);
-          if (tested.exitCode !== 0) throw new Error(`targeted verification failed: ${command.program} ${command.args.join(' ')}`);
-        }
-        result.targetedPassed = true;
-
-        const regression = await this.workspace.run(proposal.regression);
-        if (regression.exitCode !== 0) throw new Error('regression verification failed');
-        result.regressionPassed = true;
-
-        if (beta7Qa) {
-          const beta7 = await this.workspace.run(beta7Qa);
-          if (beta7.exitCode !== 0) throw new Error('Beta.7 QA gate failed');
-          result.beta7Passed = true;
-        } else {
-          result.beta7Passed = !item.execution.requireBeta7Qa;
-        }
-        result.verified = result.targetedPassed && result.regressionPassed && result.beta7Passed;
-        item.status = result.verified ? 'completed' : 'verification';
-        return result;
-      } catch (error: unknown) {
-        await this.workspace.rollback(originalBranch, branch);
-        result.rolledBack = true;
-        item.status = 'blocked';
-        throw error;
+      for (const change of proposal.changes) {
+        await this.workspace.applyChange(change, item);
+        attemptRecord.changedFiles.push({ operation: change.operation, path: change.path });
       }
+      result.executed = true;
+
+      for (const command of proposal.targetedTests) {
+        const tested = await this.workspace.run(command);
+        attemptRecord.commandsExecuted.push({ stage: 'targeted', program: command.program, args: [...command.args], exitCode: tested.exitCode });
+        if (tested.exitCode !== 0) throw new Error(`targeted verification failed: ${command.program} ${command.args.join(' ')}`);
+      }
+      result.targetedPassed = true;
+
+      const regression = await this.workspace.run(proposal.regression);
+      attemptRecord.commandsExecuted.push({ stage: 'regression', program: proposal.regression.program, args: [...proposal.regression.args], exitCode: regression.exitCode });
+      if (regression.exitCode !== 0) throw new Error('regression verification failed');
+      result.regressionPassed = true;
+
+      if (beta7Qa) {
+        const beta7 = await this.workspace.run(beta7Qa);
+        attemptRecord.commandsExecuted.push({ stage: 'beta7', program: beta7Qa.program, args: [...beta7Qa.args], exitCode: beta7.exitCode });
+        if (beta7.exitCode !== 0) throw new Error('Beta.7 QA gate failed');
+        result.beta7Passed = true;
+        attemptRecord.evidenceReferences.push('beta7:completed');
+      } else {
+        result.beta7Passed = !item.execution.requireBeta7Qa;
+      }
+      result.verified = result.targetedPassed && result.regressionPassed && result.beta7Passed;
+      item.status = result.verified ? 'completed' : 'verification';
+      attemptRecord.rollbackState = 'not-needed';
+      attemptRecord.outcome = result.verified ? 'verified' : 'rejected';
+      finishAttempt(attemptRecord, result);
+      return result;
     } catch (error: unknown) {
       result.error = String(error);
-      if (item && item.status === 'in-progress') item.status = 'blocked';
+      attemptRecord.error = result.error;
+      if (item && item.status === 'in-progress' && originalBranch && executionBranch) {
+        try {
+          await this.workspace.rollback(originalBranch, executionBranch);
+          result.rolledBack = true;
+          attemptRecord.rollbackState = 'completed';
+          attemptRecord.outcome = 'rolled-back';
+        } catch (rollbackError: unknown) {
+          result.error = `${result.error}; rollback failed: ${String(rollbackError)}`;
+          attemptRecord.error = result.error;
+          attemptRecord.outcome = 'rejected';
+        }
+        item.status = 'blocked';
+      }
+      finishAttempt(attemptRecord, result);
       return result;
     }
   }

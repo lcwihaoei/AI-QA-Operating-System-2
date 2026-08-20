@@ -82,6 +82,37 @@ export interface BackendProposalResult {
   error?: string;
 }
 
+export interface BackendAttemptCommandRecord {
+  stage: 'targeted' | 'regression' | 'beta7';
+  program: string;
+  args: string[];
+  exitCode: number;
+}
+
+export interface BackendExecutionAttemptRecord {
+  schemaVersion: 1;
+  executorVersion: 'beta8-controlled-executor-v1';
+  workItemId: string;
+  scopeHash: string;
+  proposalHash: string;
+  attempt: number;
+  startedAt: string;
+  finishedAt: string;
+  originalBranch?: string;
+  executionBranch?: string;
+  changedFiles: Array<{ operation: 'create' | 'replace'; path: string }>;
+  commandsExecuted: BackendAttemptCommandRecord[];
+  testResults: {
+    targetedPassed: boolean;
+    regressionPassed: boolean;
+    beta7Passed: boolean;
+  };
+  evidenceReferences: string[];
+  rollbackState: 'not-started' | 'not-needed' | 'completed';
+  outcome: 'verified' | 'rejected' | 'rolled-back';
+  error?: string;
+}
+
 export interface BackendExecutionResult {
   executed: boolean;
   branch?: string;
@@ -90,5 +121,6 @@ export interface BackendExecutionResult {
   beta7Passed: boolean;
   verified: boolean;
   rolledBack: boolean;
+  attemptRecord: BackendExecutionAttemptRecord;
   error?: string;
 }
