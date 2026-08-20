@@ -4,6 +4,7 @@ import path from 'node:path';
 import type {
   ControlPlaneSummary,
   GitHubQaSummary,
+  QaReportSummary,
   QaRunOptions,
   QaRunResult,
   SemanticStateSummary,
@@ -29,7 +30,9 @@ import { HttpVisualEvidenceProvider } from '../providers/http-visual-evidence-pr
 import { MiniMaxPlannerModel } from '../providers/minimax-planner-model.js';
 import { MiniMaxUxReasoner } from '../providers/minimax-ux-reasoner.js';
 import { findingsFromEvents } from '../reporting/bug-reporter.js';
+import { generateEvidenceReport } from '../reporting/evidence-report.js';
 import { UxLearningStore } from '../ux/ux-learning-store.js';
+import type { UxOpportunity } from '../ux/ux-types.js';
 import { VisualBaselineStore } from '../visual/visual-baseline-store.js';
 
 function emptyGitHubSummary(enabled: boolean): GitHubQaSummary {
@@ -53,6 +56,10 @@ function emptyUxSummary(enabled: boolean): UxIntelligenceSummary {
   };
 }
 
+function emptyReportSummary(enabled: boolean): QaReportSummary {
+  return { enabled, videos: 0, findings: 0, uxOpportunities: 0 };
+}
+
 export class QaManager {
   async run(options: QaRunOptions): Promise<QaRunResult> {
     const startedAt = new Date().toISOString();
@@ -71,7 +78,14 @@ export class QaManager {
     const exploration = await explorer.run(options);
 
     const visualEvidenceProvider = options.visualEndpoint ? new HttpVisualEvidenceProvider(options.visualEndpoint, options.visualToken) : undefined;
-    const visualAgent = new VisualAgent(evidence, undefined, resolveVisualViewports(options.visualViewports), exploration.storageState, visualEvidenceProvider);
+    const visualAgent = new VisualAgent(
+      evidence,
+      undefined,
+      resolveVisualViewports(options.visualViewports),
+      exploration.storageState,
+      visualEvidenceProvider,
+      options.recordVideo === true,
+    );
     const visual = await visualAgent.run(exploration.visitedUrls);
 
     let visualEvents = visual.events;
@@ -132,6 +146,7 @@ export class QaManager {
 
     let ux = emptyUxSummary(options.uxIntelligence !== false);
     let uxLearning: UxLearningSummary = { enabled: options.uxIntelligence !== false, memoryExisted: false, status: 'untracked', memoryUpdated: false };
+    let uxOpportunities: UxOpportunity[] = [];
     if (options.uxIntelligence !== false) {
       try {
         const reasoner = options.uxEndpoint
@@ -140,6 +155,7 @@ export class QaManager {
             ? new MiniMaxUxReasoner(options.minimaxApiKey, options.minimaxModel, options.minimaxBaseUrl)
             : undefined;
         const analyzed = await new UxAgent(exploration.storageState, reasoner).run(exploration.visitedUrls, events, exploration.uxSnapshots);
+        uxOpportunities = analyzed.opportunities;
         const opportunityPath = path.join(evidence.runDir, 'ux-opportunities.json');
         await writeFile(opportunityPath, `${JSON.stringify({ version: 1, runId, summary: analyzed.summary, flow: analyzed.flow, opportunities: analyzed.opportunities }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
         ux = { ...analyzed.summary, opportunityPath };
@@ -181,7 +197,8 @@ export class QaManager {
     const result: QaRunResult = {
       runId, startedAt, finishedAt: new Date().toISOString(), visitedUrls: exploration.visitedUrls, actions: exploration.actions,
       events, findings, coverage: coverageGraph.snapshot(), visualBaseline, api: api.summary, correlation: correlation.summary,
-      semanticState, device: device.summary, githubQa, controlPlane, ux, uxLearning, outputDir: evidence.runDir,
+      semanticState, device: device.summary, githubQa, controlPlane, ux, uxLearning,
+      report: emptyReportSummary(options.evidenceReport !== false), outputDir: evidence.runDir,
     };
 
     if (options.controlPlanePath) {
@@ -190,6 +207,19 @@ export class QaManager {
         controlPlane.runRecorded = true;
       } catch (error: unknown) {
         controlPlane.toolingError = String(error);
+      }
+    }
+
+    if (options.evidenceReport !== false) {
+      try {
+        result.report = await generateEvidenceReport({
+          runDir: evidence.runDir,
+          result,
+          uxOpportunities,
+          videos: visual.videos,
+        });
+      } catch (error: unknown) {
+        result.report = { ...emptyReportSummary(true), toolingError: String(error) };
       }
     }
 
