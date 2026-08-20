@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
@@ -98,8 +97,8 @@ describe('Beta.9 governed dashboard action service', () => {
     const endpoint = await modelServer();
     const artifactRoot = path.join(root, '.qa-beta9');
     await mkdir(artifactRoot, { recursive: true });
-    const beforePath = path.join(root, 'before.json');
-    const afterPath = path.join(root, 'after.json');
+    const beforePath = path.join(artifactRoot, 'before.json');
+    const afterPath = path.join(artifactRoot, 'after.json');
     const planPath = path.join(artifactRoot, 'plan.json');
     const finding = selectedFinding();
     const before = qaResult('run-before', [finding]);
@@ -134,6 +133,7 @@ describe('Beta.9 governed dashboard action service', () => {
     expect(executed.items[itemId]!.attempt?.outcome).toBe('awaiting-correlation');
     expect(await readFile(path.join(root, 'src/app.ts'), 'utf8')).toContain('correct label');
     expect((await exec('git', ['branch', '--show-current'], { cwd: root })).stdout.trim()).toMatch(/^aiqa\/fix\/b9-fix-/);
+    expect(await readFile(planPath, 'utf8')).toContain(planSummary.planHash);
 
     const correlated = await service.correlate(itemId);
     expect(correlated.items[itemId]!.phase).toBe('completed');
@@ -146,7 +146,7 @@ describe('Beta.9 governed dashboard action service', () => {
     const root = await fixtureRepo();
     const artifactRoot = path.join(root, '.qa-beta9');
     await mkdir(artifactRoot, { recursive: true });
-    const beforePath = path.join(root, 'before.json');
+    const beforePath = path.join(artifactRoot, 'before.json');
     const planPath = path.join(artifactRoot, 'plan.json');
     const finding = selectedFinding();
     const before = qaResult('run-before', [finding]);
