@@ -1,0 +1,11 @@
+{
+  "version": "0.10.0-beta.9",
+  "action": "publish-prerelease",
+  "approved": true,
+  "requestedAt": "2026-08-20T19:39:00+08:00",
+  "safety": {
+    "merge": false,
+    "deploy": false,
+    "releaseType": "prerelease"
+  }
+}
