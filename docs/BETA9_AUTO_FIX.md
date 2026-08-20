@@ -71,7 +71,7 @@ Safety properties:
 - requires a clean checkout;
 - creates an isolated `aiqa/fix/<work-item>` branch;
 - supports bounded create/replace operations only;
-- denies Git internals, workflow files, env/credential/key material and lockfiles;
+- denies Git internals, workflow files, env/credential/key material, reserved AI-QA control artifacts and lockfiles;
 - replacement writes require the exact SHA-256 reviewed during planning;
 - verification commands are restricted to test/check/lint/type/build/verify/QA tooling;
 - targeted tests run before broader regression and Beta.7 QA;
@@ -83,6 +83,8 @@ Safety properties:
 A successful Beta.7 command exit code does **not** mean the defect is fixed. The item enters `verification` and the attempt becomes `awaiting-correlation` until a fresh Beta.7 result is compared with the source result.
 
 ## 5. Post-QA correlation
+
+CLI correlation can use an explicit post-run result:
 
 ```bash
 npm run beta9 -- correlate \
@@ -103,6 +105,38 @@ Correlation is conservative:
 New findings are counted. A new critical/high finding blocks automatic retry. The correlation artifact is immutable and has its own deterministic `correlationHash`.
 
 Only `resolved` with no new critical/high regression marks the WorkItem `completed`.
+
+### Safe fresh-result discovery in the dashboard
+
+The dashboard does not require the operator to manually paste a new `result.json` path after every successful fix attempt. When a target repository is supplied, the CLI defaults the discovery root to:
+
+```text
+<beta9-repo>/.qa-runs
+```
+
+A custom root can be supplied with:
+
+```bash
+--beta9-post-results-root /path/to/.qa-runs
+```
+
+An exact result can always override discovery:
+
+```bash
+--beta9-post-result /path/to/.qa-runs/<run-id>/result.json
+```
+
+Auto-discovery is deliberately fail-closed. It reads the immutable attempt evidence and only considers valid regular `result.json` files produced after that attempt started. It excludes the source run, rejects attempt-state paths outside the configured artifact root, ignores symlinked run directories/files and invalid result JSON, and never selects an arbitrary newest report.
+
+The decision rule is exact:
+
+```text
+0 valid fresh candidates → block correlation
+1 valid fresh candidate  → use it
+2+ valid fresh candidates → block correlation and require --beta9-post-result
+```
+
+This prevents a concurrent or unrelated QA run from being silently treated as evidence that a particular fix worked.
 
 ## 6. Bounded retry authorization
 
@@ -145,7 +179,7 @@ The authorization is consumed when the retry begins. An attempt above 1 cannot b
 
 ## 7. Governed management-dashboard workflow
 
-The dashboard can now drive the same gated lifecycle. It remains read-only unless `--allow-actions` is explicitly enabled on a loopback bind.
+The dashboard can drive the same gated lifecycle. It remains read-only unless `--allow-actions` is explicitly enabled on a loopback bind.
 
 Read-only evidence/review mode:
 
@@ -156,7 +190,7 @@ npm run dashboard -- \
   --beta9-plan .qa-beta9/plan.json
 ```
 
-Full governed local action mode:
+Full governed local action mode with safe fresh-result auto-discovery:
 
 ```bash
 AIQA_BETA9_TOKEN=... npm run dashboard -- \
@@ -165,10 +199,11 @@ AIQA_BETA9_TOKEN=... npm run dashboard -- \
   --beta9-plan .qa-beta9/plan.json \
   --beta9-repo /path/to/target \
   --beta9-model-endpoint https://fix-model-gateway.example/plan \
-  --beta9-post-result .qa-runs/<fresh-post-run>/result.json \
   --beta9-artifacts .qa-beta9 \
   --allow-actions
 ```
+
+Because `--beta9-repo` is present, `<beta9-repo>/.qa-runs` becomes the default post-QA discovery root. Use `--beta9-post-results-root` to change it or `--beta9-post-result` to pin an exact report.
 
 The Beta.9 page exposes the controlled sequence:
 
@@ -180,10 +215,16 @@ Select findings
   → Confirm exact plan-hash suffix
   → Execute on isolated branch
   → Targeted tests / regression / Beta.7
-  → Correlate fresh Beta.7 result
+  → Correlate one unambiguous fresh Beta.7 result
   → Completed OR prepare bounded retry
   → New plan + new approval for retry
 ```
+
+### In-product review and confirmation dialogs
+
+Beta.9 no longer relies on browser-native `prompt()`, `confirm()` or `alert()` for governed actions. Selection, exact-file approval, source-write confirmation, post-QA correlation, retry preparation and error notices use the dashboard's own bilingual responsive dialogs.
+
+The write-confirmation dialog shows the reviewed change paths, explains the isolated-branch/test/QA boundary and requires the last eight characters of the exact reviewed plan hash. The approval dialog shows the exact reviewed paths and full plan hash before collecting the approver identity. These dialogs follow the existing `繁體 | English`, System/Light/Dark and RWD shell and are delivered as same-origin JS/CSS under the dashboard CSP.
 
 Dashboard security boundaries:
 
@@ -191,7 +232,8 @@ Dashboard security boundaries:
 - the request Host must itself be a loopback host, reducing DNS-rebinding exposure;
 - cross-site requests are rejected and an Origin, when present, must match the dashboard Host;
 - POST actions require JSON and have a bounded request-body size;
-- repository path, model endpoint, source/post-result paths, artifact directory and model token are server startup configuration and cannot be supplied by browser requests;
+- concurrent dashboard mutation requests are rejected by a server-side action mutex;
+- repository path, model endpoint, source/post-result paths, discovery root, artifact directory and model token are server startup configuration and cannot be supplied by browser requests;
 - the browser never receives generated source-file contents from the fix plan;
 - approval uses exact reviewed changed-file paths;
 - execution requires an additional explicit confirmation based on the reviewed plan hash;
@@ -214,10 +256,11 @@ Beta.7 finding
   → regression
   → Beta.7 QA command
   → awaiting-correlation
-  → fresh Beta.7 result comparison
+  → exactly one fresh Beta.7 result comparison
        ├─ resolved + no high regression → completed
        ├─ persistent + retry eligible → rollback partial fix → fresh plan + approval → next bounded attempt
        ├─ new critical/high regression → blocked for human review
+       ├─ multiple fresh QA reports → blocked; explicit result required
        └─ inconclusive / attempt budget exhausted → blocked
 ```
 
