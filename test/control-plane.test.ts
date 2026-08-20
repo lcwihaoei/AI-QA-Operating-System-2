@@ -1,10 +1,11 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ControlPlaneStore } from '../src/control/control-plane.js';
 import { dashboardCss, dashboardHtml, dashboardJs, isLoopbackHost, startDashboard } from '../src/control/dashboard-server.js';
 import type { QaRunResult } from '../src/core/types.js';
+import { buildBeta9Plan } from '../src/fix/beta9-planner.js';
 
 const servers: Array<{ close(cb: () => void): void }> = [];
 afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(resolve)))); });
@@ -75,17 +76,43 @@ describe('management dashboard shell', () => {
   it('serves external dashboard assets under a CSP without unsafe-inline', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-dashboard-'));
     const store = new ControlPlaneStore(path.join(dir, 'state.json'));
-    const started = await startDashboard(store, { host: '127.0.0.1', port: 0 });
+    const started = await startDashboard(store, { host: '127.0.0.1', port: 0, beta9PlanPath: path.join(dir, 'missing-beta9.json') });
     servers.push(started.server);
     const root = await fetch(`http://127.0.0.1:${started.port}/`);
     expect(root.status).toBe(200);
     expect(root.headers.get('content-security-policy')).not.toContain('unsafe-inline');
-    expect(await root.text()).toContain('AI QA Operating System');
+    const rootText = await root.text();
+    expect(rootText).toContain('AI QA Operating System');
+    expect(rootText).toContain('/beta9-dashboard.js');
     const css = await fetch(`http://127.0.0.1:${started.port}/dashboard.css`);
     expect(css.headers.get('content-type')).toContain('text/css');
     expect(await css.text()).toContain('.mobile-nav');
     const js = await fetch(`http://127.0.0.1:${started.port}/dashboard.js`);
     expect(js.headers.get('content-type')).toContain('text/javascript');
     expect(await js.text()).toContain('function setLocale');
+    const beta9Js = await fetch(`http://127.0.0.1:${started.port}/beta9-dashboard.js`);
+    expect(beta9Js.headers.get('content-type')).toContain('text/javascript');
+    expect(await beta9Js.text()).toContain("fetch('/api/beta9'");
+    const beta9 = await fetch(`http://127.0.0.1:${started.port}/api/beta9`);
+    expect(await beta9.json()).toEqual({ available: false });
+  });
+
+  it('exposes only a bounded validated Beta.9 plan summary through the read-only endpoint', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'aiqa-dashboard-beta9-'));
+    const planPath = path.join(dir, 'plan.json');
+    const plan = buildBeta9Plan({ result: qaResult(), selectedFingerprints: ['f1'], project: 'dashboard-fixture' });
+    await writeFile(planPath, `${JSON.stringify(plan, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    const started = await startDashboard(new ControlPlaneStore(path.join(dir, 'state.json')), { host: '127.0.0.1', port: 0, beta9PlanPath: planPath });
+    servers.push(started.server);
+    const response = await fetch(`http://127.0.0.1:${started.port}/api/beta9`);
+    expect(response.status).toBe(200);
+    const summary = await response.json() as { available: boolean; selected: number; project: string; items: Array<Record<string, unknown>> };
+    expect(summary.available).toBe(true);
+    expect(summary.selected).toBe(1);
+    expect(summary.project).toBe('dashboard-fixture');
+    expect(summary.items[0]).toMatchObject({ title: 'broken', severity: 'high', kind: 'assertion', status: 'planned', approved: false, mutationAllowed: false, affectedFiles: 0, allowedPaths: 0 });
+    expect(JSON.stringify(summary)).not.toContain('message');
+    expect(JSON.stringify(summary)).not.toContain('reproduction');
+    expect(JSON.stringify(summary)).not.toContain('evidence');
   });
 });
