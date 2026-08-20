@@ -98,7 +98,7 @@ export class VisualAgent {
 
           let screenshot: string | undefined;
           if (signals.length > 0) {
-            screenshot = await this.evidence.screenshot(page, `visual-${viewport.name}-${analyzedStates}`);
+            screenshot = await this.evidence.screenshot(page, `visual-${viewport.name}-${analyzedStates}`, false);
           }
 
           let providerError: string | undefined;
