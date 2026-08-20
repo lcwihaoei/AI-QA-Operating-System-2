@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { discoverFreshBeta7Result } from './beta7-result-discovery.js';
 import {
   beta9DashboardJs,
   createBeta9SelectionFromDashboard,
@@ -22,6 +23,7 @@ export interface DashboardServerOptions {
   beta9RepoPath?: string;
   beta9ModelEndpoint?: string;
   beta9PostResultPath?: string;
+  beta9PostResultsRoot?: string;
   beta9ArtifactRoot?: string;
   beta9ModelToken?: string;
   allowActions?: boolean;
@@ -112,7 +114,7 @@ function dashboardDocument(): string {
 }
 
 function actionErrorStatus(message: string): number {
-  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state/i.test(message)) return 409;
+  if (/not configured|already exists|already running|requires|not available|not permit|not approved|current branch|state|no fresh|multiple fresh/i.test(message)) return 409;
   return 400;
 }
 
@@ -120,19 +122,22 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 8787;
   const beta9PlanPath = options.beta9PlanPath ?? '.qa-beta9/plan.json';
+  const beta9ArtifactRoot = options.beta9ArtifactRoot ?? '.qa-beta9';
   const allowActions = options.allowActions === true;
   if (!isLoopbackHost(host) && !options.token) throw new Error('remote dashboard binding requires a bearer token');
   if (!isLoopbackHost(host) && allowActions) throw new Error('dashboard actions are loopback-only even when remote read access is authenticated');
 
-  const beta9Actions = options.beta7ResultPath ? new Beta9DashboardActionService({
+  const actionConfig = (postResultPath = options.beta9PostResultPath) => ({
     planPath: beta9PlanPath,
-    sourceResultPath: options.beta7ResultPath,
+    sourceResultPath: options.beta7ResultPath!,
     repoPath: options.beta9RepoPath,
     modelEndpoint: options.beta9ModelEndpoint,
-    postResultPath: options.beta9PostResultPath,
-    artifactRoot: options.beta9ArtifactRoot,
+    postResultPath,
+    artifactRoot: beta9ArtifactRoot,
     modelToken: options.beta9ModelToken,
-  }) : undefined;
+  });
+  const beta9Actions = options.beta7ResultPath ? new Beta9DashboardActionService(actionConfig()) : undefined;
+  let dashboardActionBusy = false;
 
   const server = createServer(async (request, response) => {
     if (!authorized(request, options.token)) return json(response, 401, { error: 'unauthorized' });
@@ -140,6 +145,8 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
 
     if (request.method === 'POST' && pathname.startsWith('/api/beta9/')) {
       if (!actionRequestAllowed(request, host, allowActions)) return json(response, 403, { error: 'Beta.9 dashboard actions are disabled or not same-origin loopback' });
+      if (dashboardActionBusy) return json(response, 409, { error: 'another Beta.9 dashboard action is already running' });
+      dashboardActionBusy = true;
       try {
         const body = objectBody(await readJsonBody(request));
         if (pathname === '/api/beta9/select') {
@@ -154,7 +161,7 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           });
           return json(response, 201, summary);
         }
-        if (!beta9Actions) return json(response, 409, { error: 'Beta.7 source result is not configured for Beta.9 actions' });
+        if (!beta9Actions || !options.beta7ResultPath) return json(response, 409, { error: 'Beta.7 source result is not configured for Beta.9 actions' });
         const itemId = requiredString(body, 'itemId', 120);
         if (pathname === '/api/beta9/plan') return json(response, 200, await beta9Actions.generateFixPlan(itemId));
         if (pathname === '/api/beta9/approve') {
@@ -167,12 +174,28 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
           if (body.confirmWrite !== true) throw new Error('execute requires confirmWrite=true');
           return json(response, 200, await beta9Actions.executeFix(itemId, planHash, true));
         }
-        if (pathname === '/api/beta9/correlate') return json(response, 200, await beta9Actions.correlate(itemId));
+        if (pathname === '/api/beta9/correlate') {
+          if (options.beta9PostResultPath) return json(response, 200, await beta9Actions.correlate(itemId));
+          if (!options.beta9PostResultsRoot) throw new Error('fresh post-fix Beta.7 result is not configured and auto-discovery root is unavailable');
+          const planSummary = await loadBeta9DashboardSummary(beta9PlanPath);
+          if (!planSummary.available || !planSummary.sourceRunId) throw new Error('validated Beta.9 source run is not available for fresh-result discovery');
+          const discovered = await discoverFreshBeta7Result({
+            runsRoot: options.beta9PostResultsRoot,
+            artifactRoot: beta9ArtifactRoot,
+            sourceResultPath: options.beta7ResultPath,
+            sourceRunId: planSummary.sourceRunId,
+            itemId,
+          });
+          const correlator = new Beta9DashboardActionService(actionConfig(discovered.path));
+          return json(response, 200, await correlator.correlate(itemId));
+        }
         if (pathname === '/api/beta9/prepare-retry') return json(response, 200, await beta9Actions.prepareRetry(itemId));
         return json(response, 404, { error: 'unknown Beta.9 dashboard action' });
       } catch (error: unknown) {
         const message = String(error instanceof Error ? error.message : error).slice(0, 1_000);
         return json(response, actionErrorStatus(message), { error: message });
+      } finally {
+        dashboardActionBusy = false;
       }
     }
 
@@ -189,7 +212,9 @@ export async function startDashboard(store: ControlPlaneStore, options: Dashboar
     if (pathname === '/api/beta9') return json(response, 200, await loadBeta9DashboardSummary(beta9PlanPath));
     if (pathname === '/api/beta9/actions') {
       if (!beta9Actions) return json(response, 200, { available: false, busy: false, configuration: { repo: false, model: false, postResult: false }, items: {} });
-      return json(response, 200, await beta9Actions.summary());
+      const summary = await beta9Actions.summary();
+      if (options.beta9PostResultsRoot && !options.beta9PostResultPath) summary.configuration.postResult = true;
+      return json(response, 200, summary);
     }
     if (pathname === '/api/beta9/findings') {
       if (!options.beta7ResultPath) return json(response, 200, { available: false, actionsAllowed: false });
