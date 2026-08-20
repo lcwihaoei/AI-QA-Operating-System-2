@@ -77,7 +77,7 @@ async function post(base: string, endpoint: string, body: unknown) {
 }
 
 describe('Beta.8 mock migration dashboard HTTP lifecycle', () => {
-  it('drives approve → live verify → propose → exact-hash execute through loopback-only actions', async () => {
+  it('drives decision → live verify → proposal → exact execution → verified local acceptance', async () => {
     const { root, repo, artifacts, recordId } = await fixture();
     const model = await modelEndpoint();
     const started = await startDashboard(new ControlPlaneStore(path.join(root, '.qa-control', 'state.json')), {
@@ -106,17 +106,38 @@ describe('Beta.8 mock migration dashboard HTTP lifecycle', () => {
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
 
     const wrong = await post(base, '/api/beta8/mock-execute', { recordId, proposalHash: '0'.repeat(64), confirmWrite: true });
-    expect(wrong.status).toBe(409);
+    expect(wrong.status).toBe(400);
+    expect(String(wrong.json.error)).toMatch(/latest reviewed proposal/i);
 
     const executed = await post(base, '/api/beta8/mock-execute', { recordId, proposalHash: hash, confirmWrite: true });
     expect(executed.status).toBe(200);
     expect(executed.json.records[0].status).toBe('completed');
     expect(await readFile(path.join(repo, 'backend', 'seeds', 'demo.json'), 'utf8')).toContain('id');
 
+    const preview = await post(base, '/api/beta8/mock-preview-acceptance', { recordId });
+    expect(preview.status).toBe(200);
+    const acceptanceHash = preview.json.items[recordId].preview.acceptanceHash as string;
+    expect(acceptanceHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.json.items[recordId].preview.changedFiles).toEqual([
+      expect.objectContaining({ operation: 'create', path: 'backend/seeds/demo.json', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+    ]);
+
+    const wrongAcceptance = await post(base, '/api/beta8/mock-accept', { recordId, acceptanceHash: '0'.repeat(64), acceptedBy: 'owner' });
+    expect(wrongAcceptance.status).toBe(409);
+
+    const accepted = await post(base, '/api/beta8/mock-accept', { recordId, acceptanceHash, acceptedBy: 'owner' });
+    expect(accepted.status).toBe(200);
+    expect(accepted.json.items[recordId].record).toMatchObject({ acceptedBy: 'owner', acceptanceHash });
+    expect(accepted.json.items[recordId].record.commitSha).toMatch(/^[a-f0-9]{40}$/);
+    expect((await exec('git', ['status', '--porcelain'], { cwd: repo })).stdout.split('\n').filter((line) => line && !line.includes('.qa-backend')).length).toBe(0);
+
     const js = await fetch(`${base}/beta8-mock-dashboard.js`);
     const css = await fetch(`${base}/beta8-mock-dashboard.css`);
     expect(js.status).toBe(200);
-    expect(await js.text()).toContain('Mock Migration');
+    const jsText = await js.text();
+    expect(jsText).toContain('Mock Migration');
+    expect(jsText).toContain('mock-preview-acceptance');
+    expect(jsText).toContain('mock-accept');
     expect(css.status).toBe(200);
     expect(await css.text()).toContain('#beta8MockWorkflow');
   }, 35_000);
