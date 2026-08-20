@@ -13,6 +13,7 @@ const MANIFEST_FILES = new Set([
   'package.json', 'tsconfig.json', 'pyproject.toml', 'requirements.txt', 'go.mod', 'Cargo.toml', 'composer.json', 'pom.xml',
   'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts', 'pubspec.yaml', 'README.md',
 ]);
+const CONTROL_ARTIFACT_ROOTS = ['.qa-beta9', '.qa-runs', '.qa-backend', '.qa-control', '.qa-fix'];
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -20,6 +21,11 @@ function sha256(value: string): string {
 
 function normalizeGitPath(value: string): string {
   return value.replace(/^\.\//, '').replace(/\\/g, '/');
+}
+
+function isControlArtifactPath(value: string): boolean {
+  const normalized = normalizeGitPath(value);
+  return CONTROL_ARTIFACT_ROOTS.some((root) => normalized === root || normalized.startsWith(`${root}/`));
 }
 
 function safeBranchPrefix(value: string): string {
@@ -44,8 +50,13 @@ export class LocalGitBackendWorkspace implements BackendExecutionWorkspace {
   }
 
   async isClean(): Promise<boolean> {
-    const result = await this.exec('git', ['status', '--porcelain=v1'], true);
-    return result.exitCode === 0 && result.stdout.trim() === '';
+    const result = await this.exec('git', ['status', '--porcelain=v1', '--untracked-files=all'], true);
+    if (result.exitCode !== 0) return false;
+    const dirty = result.stdout.split('\n').filter(Boolean).filter((line) => {
+      if (!line.startsWith('?? ')) return true;
+      return !isControlArtifactPath(line.slice(3));
+    });
+    return dirty.length === 0;
   }
 
   async collectContext(item: WorkItem, maxFiles: number): Promise<BackendSourceContext[]> {
@@ -127,7 +138,8 @@ export class LocalGitBackendWorkspace implements BackendExecutionWorkspace {
 
   async rollback(originalBranch: string, executionBranch: string): Promise<void> {
     await this.exec('git', ['reset', '--hard', 'HEAD'], true);
-    await this.exec('git', ['clean', '-fd'], true);
+    const exclusions = CONTROL_ARTIFACT_ROOTS.flatMap((root) => ['-e', `${root}/`]);
+    await this.exec('git', ['clean', '-fd', ...exclusions], true);
     await this.exec('git', ['switch', originalBranch], true);
     await this.exec('git', ['branch', '-D', executionBranch], true);
   }
