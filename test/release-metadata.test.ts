@@ -41,4 +41,17 @@ describe('Beta.9 release candidate metadata', () => {
       expect(required.has(gate), `missing release gate: ${gate}`).toBe(true);
     }
   });
+
+  it('requires an explicit matching prerelease tag and keeps the bilingual browser gate in release CI', async () => {
+    const workflow = await readFile('.github/workflows/release.yml', 'utf8');
+
+    expect(workflow).toContain("tags:\n      - 'v0.10.0-beta.*'");
+    expect(workflow).not.toContain('branches:\n      - feature/v0.10.0-beta.9-controlled-auto-fix');
+    expect(workflow).toContain('test "$GITHUB_REF_TYPE" = "tag"');
+    expect(workflow).toContain('test "$GITHUB_REF_NAME" = "$TAG"');
+    expect(workflow).toContain('test/feature-planner-browser-e2e.test.ts');
+    expect(workflow).toContain('npm audit --audit-level=high');
+    expect(workflow).toContain('npm pack --dry-run');
+    expect(workflow).toContain('sha256sum *.tgz > SHA256SUMS.txt');
+  });
 });
