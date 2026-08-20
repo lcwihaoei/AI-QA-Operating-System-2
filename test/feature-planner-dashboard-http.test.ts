@@ -101,11 +101,12 @@ describe('Product / Feature Planner dashboard HTTP workflow', () => {
     const html = await fetch(`${base}/`).then((response) => response.text());
     expect(html).toContain('/feature-planner-dashboard.css');
     expect(html).toContain('/feature-planner-dashboard.js');
+    expect(html).toContain('繁體');
     const js = await fetch(`${base}/feature-planner-dashboard.js`);
     expect(js.status).toBe(200);
     const jsText = await js.text();
     expect(jsText).toContain('Product / Feature Planner');
-    expect(jsText).toContain('繁體');
+    expect(jsText).toContain('產品／功能規劃器');
     expect(jsText).toContain('/api/features/blueprint');
     const css = await fetch(`${base}/feature-planner-dashboard.css`);
     expect(css.status).toBe(200);
