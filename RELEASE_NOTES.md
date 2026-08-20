@@ -1,71 +1,46 @@
-# AI QA Operating System v0.10.0-beta.5
+# AI QA Operating System v0.10.0-beta.6
 
-Field-validation hardening release based on the real LeeEngUI Stage 17 deep QA run against beta.4. This release focuses on QA-engine correctness: MiniMax reliability, visual false-positive reduction, tooling/product-error separation, compiled runtime stability, and explicit baseline/memory migration after classifier changes.
+QA-engine reliability release focused on reducing visual false positives without hiding genuine viewport defects, and on keeping accepted baselines/regression memory explicit after classifier changes.
 
-## MiniMax M3 reliability
+## Visual classifier reliability
 
-- Default per-attempt timeout is now 45 seconds instead of the beta.4 15-second window.
-- `MINIMAX_TIMEOUT_MS` can tune the timeout (1,000–180,000 ms).
-- Transient network/timeout, HTTP 408/429 and 5xx responses receive up to three bounded retries by default; `MINIMAX_RETRY_ATTEMPTS` supports 1–5 attempts.
-- Non-retryable 4xx responses are not retried.
-- Retry backoff is exponential and capped.
-- Structured response extraction now removes `<think>...</think>` and Markdown fences and finds balanced nested JSON while respecting quoted braces and escapes.
-- MiniMax planner context is reduced to bounded paths, page counters, compact coverage data and at most 60 candidates; raw page body samples are not sent.
-- MiniMax UX reasoning receives aggregate page metrics only, capped to 30 page snapshots and 16 deterministic opportunities.
-- Call telemetry internally tracks attempts, latency and canonical model ID.
+- Hidden state is evaluated across the full ancestor chain, including `display:none`, hidden/collapsed visibility, effective opacity, `content-visibility:hidden`, `hidden`, `inert`, and `aria-hidden`.
+- Generic `.sidebar` / drawer class names are no longer automatically treated as closed. A visible sidebar with a genuinely unreachable control remains actionable.
+- Bootstrap-style `.offcanvas` remains suppressed when closed and is analyzed when explicitly open.
+- Disabled and `aria-disabled` controls are excluded from actionable offscreen/overlap checks.
+- Controls outside the root viewport but reachable through a horizontally scrollable ancestor are no longer reported as unreachable.
+- Intentional `text-overflow: ellipsis` and `-webkit-line-clamp` truncation are no longer classified as text-clipping defects.
+- Nested interactive overlap suppression now tracks all interactive ancestors, reducing false overlap reports in composed controls.
+- Normal below-fold content remains scroll-reachable and is not treated as a viewport defect.
 
-## Visual QA precision
+## Regression coverage
 
-The beta.4 LeeEngUI run showed that many reported visual findings were intentional states rather than product defects. beta.5 changes the deterministic classifier so that:
+The real-Chromium DOM geometry fixture now verifies all of the following in one field-style regression:
 
-- `.visually-hidden`, `.sr-only`, `.screen-reader-text`, hidden/inert/ARIA-hidden content is excluded from visual clipping/offscreen analysis;
-- closed off-canvas/drawer/sidebar states are excluded unless they are explicitly open;
-- controls below the fold on normal long pages are no longer classified as viewport defects simply because `y > viewport height`;
-- genuinely horizontally unreachable/clipped controls and above-viewport controls remain actionable signals.
+- screen-reader-only content is ignored;
+- closed off-canvas content is ignored;
+- normal below-fold controls are ignored;
+- controls hidden by an opacity-zero ancestor are ignored;
+- horizontally scrollable controls remain reachable;
+- intentional ellipsis is ignored;
+- disabled offscreen controls are ignored;
+- a truly unreachable horizontal control is retained;
+- a visible generic sidebar with a broken offscreen action is retained.
 
-A new real-Chromium regression fixture proves the classifier ignores visually-hidden, closed off-canvas and normal below-fold controls while retaining a genuine horizontal defect.
+## Baseline and memory migration
 
-## Product finding hygiene
+The beta.6 classifier changes the population of deterministic visual findings, so beta.5 accepted state is not silently reused:
 
-- Button probe timeouts and synthetic field/select exercise failures are classified as QA tooling evidence rather than product findings.
-- These tooling failures no longer inflate High severity counts, GitHub issue plans or regression memory.
-- Genuine uncaught browser page errors remain High severity.
+- Visual baseline schema is now version 3 with `analyzerVersion: "dom-geometry-v3"`.
+- beta.5 version-2 visual baselines are treated as untrusted until explicitly regenerated after a healthy beta.6 run.
+- GitHub regression memory is now version 3 while retaining `fingerprintSchema: "finding-v2"` and adding `classifierVersion: "qa-engine-beta6"`.
+- beta.5 version-2 regression memory must be explicitly regenerated after confirming beta.6 finding behavior.
 
-## Runtime/configuration stability
-
-- `npm run qa` now builds first and runs `node dist/src/cli.js` instead of executing the QA browser path through `tsx`. This avoids the esbuild/tsx `keepNames` `__name` helper leaking into Playwright browser-evaluated functions.
-- Empty optional `.env` assignments such as `AIQA_VISUAL_ENDPOINT=` and `AIQA_UX_ENDPOINT=""` are treated as unset, preventing URL-schema failures.
-- Existing exported environment variables still take precedence over `.env` values.
-
-## Baseline and regression-memory migration
-
-The visual classifier and finding population changed materially, so beta.5 does not silently compare against beta.4 state:
-
-- Visual baseline schema is now version 2 with `analyzerVersion: "dom-geometry-v2"` and mandatory successful `analyzedStates` provenance.
-- beta.4 version-1 visual baselines are treated as untrusted and must be regenerated.
-- GitHub finding regression memory is now version 2 with `fingerprintSchema: "finding-v2"`.
-- beta.4 version-1 GitHub finding memory is not trusted after tooling-finding removal and must be explicitly regenerated.
-
-Do **not** copy beta.4 `.qa-baselines/visual.json` or `.qa-memory/github-findings.json` into a beta.5 run. Run beta.5 once without accepting a baseline, verify healthy coverage/provenance, then explicitly update the new baseline/memory.
-
-## Regression coverage added
-
-- MiniMax M3 endpoint/model normalization
-- transient retry and non-retryable 4xx behavior
-- nested/fenced/`<think>` JSON extraction
-- MiniMax planner secret/query/body-sample minimization
-- MiniMax aggregate-only UX reasoner path
-- empty optional `.env` endpoints
-- browser tooling-failure exclusion from product findings
-- below-fold vs horizontal offscreen geometry
-- real Chromium visually-hidden/off-canvas/below-fold regression
-- compiled QA runtime entrypoint
-- visual baseline v2 provenance/migration
-- GitHub regression memory v2 migration boundary
+This preserves the existing fingerprint algorithm while making the classifier boundary explicit.
 
 ## Verified release gates
 
-The release workflow requires:
+The prerelease workflow requires:
 
 - tracked-file credential/private-key and unresolved-conflict scans;
 - tracked-file 5 MiB ceiling;
@@ -74,13 +49,13 @@ The release workflow requires:
 - Playwright Chromium installation;
 - BrowserExplorer breadth/real-click E2E;
 - VisualAgent analysis-provenance E2E;
-- DOM geometry hidden/off-canvas/below-fold real-browser E2E;
+- expanded DOM-geometry real-browser regression;
 - `npm pack --dry-run`;
 - tarball creation and SHA-256 checksum.
 
 ## Safety posture
 
 - This remains a prerelease.
-- The release is produced from the integration branch; `main` is not modified by the beta.5 hardening flow.
-- UX opportunities remain distinct from deterministic product defects.
-- Baseline/learning writes remain explicit opt-ins.
+- Release creation targets the verified beta.6 integration-branch SHA; `main` remains the review/merge surface.
+- UX opportunities remain separate from deterministic product defects.
+- Baseline and regression-memory writes remain explicit opt-ins and are never silently accepted.

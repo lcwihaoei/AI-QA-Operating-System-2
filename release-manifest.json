@@ -1,5 +1,5 @@
 {
-  "version": "0.10.0-beta.5",
+  "version": "0.10.0-beta.6",
   "channel": "prerelease",
   "milestones": ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10"],
   "validation": {
@@ -12,6 +12,9 @@
       "browser-explorer-breadth-click-e2e",
       "visual-analysis-provenance-e2e",
       "visual-hidden-offcanvas-below-fold-e2e",
+      "visual-scrollable-ellipsis-disabled-sidebar-regressions",
+      "visual-baseline-v3-migration",
+      "github-regression-memory-beta6-classifier-boundary",
       "minimax-retry-json-redaction-regressions",
       "npm-pack-dry-run",
       "artifact-sha256"
