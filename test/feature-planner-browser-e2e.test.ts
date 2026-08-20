@@ -30,22 +30,24 @@ describe('Product / Feature Planner real-browser dashboard regression', () => {
       const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
       await page.goto(base, { waitUntil: 'networkidle' });
       const sideFeature = page.locator('.sidebar [data-route="features"]');
-      await expect(sideFeature).toHaveCount(1);
+      expect(await sideFeature.count()).toBe(1);
       await sideFeature.click();
-      await expect(page.locator('#featurePlannerPage')).toHaveClass(/is-active/);
-      await expect(page.locator('#featurePlannerPage h1')).toContainText('Product / Feature Planner');
-      await expect(page.locator('#fpStart')).toBeDisabled();
+      expect(await page.locator('#featurePlannerPage').getAttribute('class')).toContain('is-active');
+      expect(await page.locator('#featurePlannerPage h1').textContent()).toContain('Product / Feature Planner');
+      expect(await page.locator('#fpStart').isDisabled()).toBe(true);
 
       await page.locator('.topbar [data-locale="zh-TW"]').click();
-      await expect(page.locator('#featurePlannerPage h1')).toContainText('產品／功能規劃器');
-      await expect(sideFeature.locator('b')).toContainText('功能規劃');
+      await page.waitForFunction(() => document.documentElement.lang === 'zh-TW');
+      expect(await page.locator('#featurePlannerPage h1').textContent()).toContain('產品／功能規劃器');
+      expect(await sideFeature.locator('b').textContent()).toContain('功能規劃');
 
       await page.setViewportSize({ width: 390, height: 844 });
       const mobileFeature = page.locator('.mobile-nav [data-route="features"]');
-      await expect(mobileFeature).toBeVisible();
+      expect(await mobileFeature.isVisible()).toBe(true);
       await mobileFeature.click();
-      await expect(page.locator('#featurePlannerPage')).toHaveClass(/is-active/);
-      await expect(page.locator('#featurePlannerPage .fp-grid').first()).toHaveCSS('grid-template-columns', /[0-9.]+px/);
+      expect(await page.locator('#featurePlannerPage').getAttribute('class')).toContain('is-active');
+      const columns = await page.locator('#featurePlannerPage .fp-grid').first().evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+      expect(columns.trim().split(/\s+/)).toHaveLength(1);
     } finally {
       await browser.close();
     }
