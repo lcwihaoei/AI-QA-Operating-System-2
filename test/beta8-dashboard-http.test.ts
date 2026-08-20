@@ -1,11 +1,14 @@
+import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ControlPlaneStore } from '../src/control/control-plane.js';
 import { startDashboard } from '../src/control/dashboard-server.js';
 
+const exec = promisify(execFile);
 const roots: string[] = [];
 const servers: Array<ReturnType<typeof createServer>> = [];
 afterEach(async () => {
@@ -18,9 +21,43 @@ async function fixture() {
   roots.push(root);
   const repo = path.join(root, 'frontend');
   await mkdir(path.join(repo, 'src'), { recursive: true });
-  await writeFile(path.join(repo, 'package.json'), JSON.stringify({ name: 'dashboard-fixture', dependencies: { vue: '^3.0.0' } }));
+  await writeFile(path.join(repo, 'package.json'), JSON.stringify({
+    name: 'dashboard-fixture', private: true, dependencies: { vue: '^3.0.0' },
+    scripts: { test: 'node -e "process.exit(0)"', build: 'node -e "process.exit(0)"', qa: 'node -e "process.exit(0)"' },
+  }));
   await writeFile(path.join(repo, 'src', 'main.ts'), `export const users=[{id:1}]; export async function load(){return fetch('/api/users').then(r=>r.json())}`);
-  return { root, repo, artifacts: path.join(root, '.qa-backend') };
+  await exec('git', ['init'], { cwd: repo });
+  await exec('git', ['config', 'user.email', 'qa@example.test'], { cwd: repo });
+  await exec('git', ['config', 'user.name', 'QA Test'], { cwd: repo });
+  await exec('git', ['add', '.'], { cwd: repo });
+  await exec('git', ['commit', '-m', 'fixture'], { cwd: repo });
+  await exec('git', ['switch', '-c', 'feature/product'], { cwd: repo });
+  return { root, repo, artifacts: path.join(repo, '.qa-backend') };
+}
+
+async function modelEndpoint(): Promise<string> {
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { context: { workItem: { id: string; approval: { scopeHash: string } } } };
+    response.statusCode = 200;
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({
+      schemaVersion: 1,
+      workItemId: body.context.workItem.id,
+      scopeHash: body.context.workItem.approval.scopeHash,
+      summary: 'Create approved backend foundation.',
+      changes: [{ operation: 'create', path: 'backend/http.ts', content: 'export const httpReady = true;\n' }],
+      targetedTests: [{ program: 'npm', args: ['test'] }],
+      regression: { program: 'npm', args: ['run', 'build'] },
+      beta7Qa: { program: 'npm', args: ['run', 'qa'] },
+    }));
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('model address unavailable');
+  return `http://127.0.0.1:${address.port}`;
 }
 
 async function request(base: string, method: string, endpoint: string, body?: unknown) {
@@ -40,11 +77,13 @@ function answer(question: any): string | string[] | boolean {
 }
 
 describe('Beta.8 dashboard HTTP workflow', () => {
-  it('keeps actions loopback/opt-in and drives discovery → interview → immutable blueprint without source mutation', async () => {
+  it('drives discovery → interview → blueprint → scope approval → proposal → exact execution through loopback endpoints', async () => {
     const { root, repo, artifacts } = await fixture();
-    const sourceBefore = await import('node:fs/promises').then(({ readFile }) => readFile(path.join(repo, 'src', 'main.ts'), 'utf8'));
+    const model = await modelEndpoint();
+    const sourceBefore = await readFile(path.join(repo, 'src', 'main.ts'), 'utf8');
     const started = await startDashboard(new ControlPlaneStore(path.join(root, '.qa-control', 'state.json')), {
-      host: '127.0.0.1', port: 0, allowActions: true, beta8RepoPath: repo, beta8ArtifactRoot: artifacts,
+      host: '127.0.0.1', port: 0, allowActions: true,
+      beta8RepoPath: repo, beta8ArtifactRoot: artifacts, beta8ModelEndpoint: model,
     });
     servers.push(started.server);
     const base = `http://127.0.0.1:${started.port}`;
@@ -68,12 +107,33 @@ describe('Beta.8 dashboard HTTP workflow', () => {
     expect(blueprint.status).toBe(200);
     expect(blueprint.json.phase).toBe('blueprint-ready');
     expect(blueprint.json.blueprint.workPlanValid).toBe(true);
+    expect(await readFile(path.join(repo, 'src', 'main.ts'), 'utf8')).toBe(sourceBefore);
 
-    const sourceAfter = await import('node:fs/promises').then(({ readFile }) => readFile(path.join(repo, 'src', 'main.ts'), 'utf8'));
-    expect(sourceAfter).toBe(sourceBefore);
-    const second = await request(base, 'POST', '/api/beta8/blueprint', {});
-    expect(second.status).toBe(409);
-  }, 25_000);
+    const itemId = 'B8-FND-001';
+    const approved = await request(base, 'POST', '/api/beta8/approve-task', { itemId, approvedBy: 'owner', allowedPaths: ['backend/**'] });
+    expect(approved.status).toBe(200);
+    expect(approved.json.blueprint.workItems.find((item: any) => item.id === itemId)).toMatchObject({ status: 'approved', approved: true });
+
+    const proposed = await request(base, 'POST', '/api/beta8/propose-task', { itemId });
+    expect(proposed.status).toBe(200);
+    const proposal = proposed.json.blueprint.workItems.find((item: any) => item.id === itemId).action.latestProposal.summary;
+    expect(proposal.proposalHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(proposal.changes).toEqual([{ operation: 'create', path: 'backend/http.ts' }]);
+    expect(JSON.stringify(proposed.json)).not.toContain('httpReady = true');
+
+    const wrong = await request(base, 'POST', '/api/beta8/execute-task', { itemId, proposalHash: '0'.repeat(64), confirmWrite: true });
+    expect(wrong.status).toBe(400);
+    expect(await readFile(path.join(repo, 'src', 'main.ts'), 'utf8')).toBe(sourceBefore);
+
+    const executed = await request(base, 'POST', '/api/beta8/execute-task', { itemId, proposalHash: proposal.proposalHash, confirmWrite: true });
+    expect(executed.status).toBe(200);
+    expect(executed.json.blueprint.workItems.find((item: any) => item.id === itemId)).toMatchObject({ status: 'completed' });
+    expect(await readFile(path.join(repo, 'backend', 'http.ts'), 'utf8')).toContain('httpReady = true');
+    expect((await exec('git', ['branch', '--show-current'], { cwd: repo })).stdout.trim()).toBe('aiqa/backend/b8-fnd-001');
+
+    const secondBlueprint = await request(base, 'POST', '/api/beta8/blueprint', {});
+    expect(secondBlueprint.status).toBe(409);
+  }, 35_000);
 
   it('rejects Beta.8 POST actions when --allow-actions is not enabled', async () => {
     const { root, repo, artifacts } = await fixture();
@@ -84,5 +144,7 @@ describe('Beta.8 dashboard HTTP workflow', () => {
     const base = `http://127.0.0.1:${started.port}`;
     const response = await request(base, 'POST', '/api/beta8/discover', {});
     expect(response.status).toBe(403);
+    const summary = await request(base, 'GET', '/api/beta8');
+    expect(summary.json.actionsAllowed).toBe(false);
   });
 });
