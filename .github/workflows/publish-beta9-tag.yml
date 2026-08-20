@@ -1,0 +1,132 @@
+name: Publish Approved Beta.9 Prerelease
+
+on:
+  push:
+    branches:
+      - feature/v0.10.0-beta.9-controlled-auto-fix
+    paths:
+      - release-trigger.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-approved-beta9
+  cancel-in-progress: false
+
+jobs:
+  validate-package-and-publish:
+    if: github.repository == 'lcwihaoei/AI-QA-Operating-System-2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate explicit Beta.9 publication authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = "branch"
+          test "$GITHUB_REF_NAME" = "feature/v0.10.0-beta.9-controlled-auto-fix"
+          VERSION="$(node -p "require('./release-manifest.json').version")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          CHANNEL="$(node -p "require('./release-manifest.json').channel")"
+          TRIGGER_VERSION="$(node -p "require('./release-trigger.json').version")"
+          TRIGGER_ACTION="$(node -p "require('./release-trigger.json').action")"
+          TRIGGER_APPROVED="$(node -p "String(require('./release-trigger.json').approved)")"
+          TAG="v$VERSION"
+          test "$VERSION" = "0.10.0-beta.9"
+          test "$PACKAGE_VERSION" = "$VERSION"
+          test "$CHANNEL" = "prerelease"
+          test "$TRIGGER_VERSION" = "$VERSION"
+          test "$TRIGGER_ACTION" = "publish-prerelease"
+          test "$TRIGGER_APPROVED" = "true"
+          grep -Fqx "# AI QA Operating System $TAG" <(head -n 1 RELEASE_NOTES.md)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Repository safety scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -nE '(-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{32,})' -- . ':(exclude).github/workflows/release.yml' ':(exclude).github/workflows/ci.yml' ':(exclude).github/workflows/publish-beta9-tag.yml'; then
+            echo 'Potential credential/private-key material detected.' >&2
+            exit 1
+          fi
+          if git grep -nE '^(<<<<<<< |>>>>>>> )' -- .; then
+            echo 'Unresolved merge-conflict marker detected.' >&2
+            exit 1
+          fi
+          bad=0
+          while IFS= read -r -d '' file; do
+            [ -f "$file" ] || continue
+            size="$(wc -c < "$file")"
+            if [ "$size" -gt 5242880 ]; then
+              echo "Tracked file exceeds 5 MiB: $file ($size bytes)" >&2
+              bad=1
+            fi
+          done < <(git ls-files -z)
+          test "$bad" -eq 0
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Dependency vulnerability gate
+        run: npm audit --audit-level=high
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Full build, unit and real-browser regression gate
+        env:
+          AIQA_BROWSER_E2E: '1'
+        run: npm run check
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Build release artifact and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          npm pack --pack-destination release-artifacts
+          (cd release-artifacts && sha256sum *.tgz > SHA256SUMS.txt)
+          cat release-artifacts/SHA256SUMS.txt
+
+      - name: Create exact-SHA Beta.9 prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            REMOTE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+            test "$REMOTE_SHA" = "$GITHUB_SHA"
+            echo "Release $TAG already exists at the exact approved SHA; keeping it unchanged."
+            exit 0
+          fi
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            REMOTE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+            test "$REMOTE_SHA" = "$GITHUB_SHA"
+          fi
+
+          gh release create "$TAG" \
+            release-artifacts/*.tgz \
+            release-artifacts/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "AI QA Operating System $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            --prerelease
+
+          REMOTE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+          test "$REMOTE_SHA" = "$GITHUB_SHA"
+          RELEASE_JSON="$(gh release view "$TAG" --json isPrerelease,tagName,targetCommitish)"
+          node -e 'const r=JSON.parse(process.argv[1]); if(!r.isPrerelease || r.tagName!==process.env.TAG) process.exit(1)' "$RELEASE_JSON"
