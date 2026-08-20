@@ -8,7 +8,8 @@ const program = new Command();
 program
   .name('aiqa-dashboard')
   .option('--state <file>', 'control-plane state file', '.qa-control/state.json')
-  .option('--beta8-repo <path>', 'optional frontend repository/project root for governed Beta.8 discovery/interview/blueprint actions')
+  .option('--beta8-repo <path>', 'optional frontend repository/project root for governed Beta.8 discovery/interview/blueprint/task actions')
+  .option('--beta8-model-endpoint <url>', 'optional provider-neutral Beta.8 backend implementation model gateway')
   .option('--beta8-artifacts <dir>', 'Beta.8 dashboard artifact root', '.qa-backend')
   .option('--beta9-plan <file>', 'Beta.9 plan file', '.qa-beta9/plan.json')
   .option('--beta7-result <file>', 'optional source Beta.7 result used to display/select findings and correlate fixes')
@@ -37,6 +38,8 @@ const started = await startDashboard(new ControlPlaneStore(raw.state), {
   token,
   beta8RepoPath: raw.beta8Repo,
   beta8ArtifactRoot: raw.beta8Artifacts,
+  beta8ModelEndpoint: raw.beta8ModelEndpoint,
+  beta8ModelToken: process.env.AIQA_BACKEND_TOKEN,
   beta9PlanPath: raw.beta9Plan,
   beta7ResultPath: raw.beta7Result,
   beta9RepoPath: raw.beta9Repo,
