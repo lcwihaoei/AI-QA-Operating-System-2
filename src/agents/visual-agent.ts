@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { chromium, type Browser } from '@playwright/test';
 import type { BrowserStorageState } from '../core/browser-state.js';
 import type { QaEvent, VisualViewportName } from '../core/types.js';
@@ -23,9 +24,15 @@ export function resolveVisualViewports(names: VisualViewportName[]): VisualViewp
   return unique.map((name) => VISUAL_VIEWPORTS[name]);
 }
 
+export interface VisualAgentVideo {
+  viewport: VisualViewportName;
+  path: string;
+}
+
 export interface VisualAgentResult {
   events: QaEvent[];
   analyzedStates: number;
+  videos: VisualAgentVideo[];
 }
 
 export class VisualAgent {
@@ -35,11 +42,13 @@ export class VisualAgent {
     private readonly viewports: VisualViewportProfile[] = [VISUAL_VIEWPORTS.desktop, VISUAL_VIEWPORTS.mobile],
     private readonly storageState?: BrowserStorageState,
     private readonly evidenceProvider?: VisualEvidenceProvider,
+    private readonly recordVideo = false,
   ) {}
 
   async run(urls: string[]): Promise<VisualAgentResult> {
     let browser: Browser | undefined;
     const events: QaEvent[] = [];
+    const videos: VisualAgentVideo[] = [];
     let analyzedStates = 0;
 
     try {
@@ -48,8 +57,12 @@ export class VisualAgent {
         const context = await browser.newContext({
           viewport: { width: viewport.width, height: viewport.height },
           storageState: this.storageState,
+          recordVideo: this.recordVideo
+            ? { dir: path.join(this.evidence.runDir, 'videos'), size: { width: viewport.width, height: viewport.height } }
+            : undefined,
         });
         const page = await context.newPage();
+        const pageVideo = page.video();
 
         for (const url of [...new Set(urls)]) {
           const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch((error: unknown) => {
@@ -146,12 +159,23 @@ export class VisualAgent {
         }
 
         await context.close();
+        if (this.recordVideo && pageVideo) {
+          const videoPath = await pageVideo.path().catch(() => undefined);
+          if (videoPath) {
+            videos.push({ viewport: viewport.name, path: videoPath });
+            events.push(this.event('snapshot', urls[0] ?? 'about:blank', `Recorded visual QA video: ${viewport.name}`, {
+              visualVideo: true,
+              viewport: viewport.name,
+              video: videoPath,
+            }));
+          }
+        }
       }
     } finally {
       await browser?.close();
     }
 
-    return { events, analyzedStates };
+    return { events, analyzedStates, videos };
   }
 
   private event(kind: QaEvent['kind'], url: string, message: string, details?: Record<string, unknown>): QaEvent {
