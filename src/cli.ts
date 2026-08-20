@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
 import { Command } from 'commander';
 import { z } from 'zod';
 import { loadDotEnv } from './config/load-env.js';
 import { QaManager } from './core/qa-manager.js';
+import { normalizeRouteSeeds, parseRouteManifest } from './planning/route-manifest.js';
 import { isSecureServiceEndpoint, isSecureVisualEndpoint } from './security/url-policy.js';
 
 loadDotEnv();
@@ -23,6 +25,7 @@ program
   .name('aiqa')
   .description('Autonomous browser, visual, API, device, UX and evidence-report QA explorer')
   .requiredOption('-u, --url <url>', 'target URL')
+  .option('--routes-file <path>', 'bounded JSON/newline route manifest used to seed otherwise-unlinked frontend routes')
   .option('--max-actions <number>', 'maximum browser actions', '40')
   .option('--max-depth <number>', 'maximum crawl depth', '2')
   .option('--max-candidates-per-page <number>', 'maximum balanced navigation/interaction candidates considered per page', '12')
@@ -64,7 +67,7 @@ const visualViewports = String(raw.visualViewports).split(',').map((value) => va
 const deviceCapabilities = parseCapabilitiesJson(raw.deviceCapabilitiesJson ?? process.env.AIQA_DEVICE_CAPABILITIES);
 const secureEndpoint = z.string().url().refine(isSecureServiceEndpoint, { message: 'endpoint must use HTTPS unless localhost/loopback' });
 const schema = z.object({
-  url: z.string().url(), maxActions: z.coerce.number().int().min(1).max(1000), maxDepth: z.coerce.number().int().min(0).max(20),
+  url: z.string().url(), routesFile: z.string().min(1).max(4096).optional(), maxActions: z.coerce.number().int().min(1).max(1000), maxDepth: z.coerce.number().int().min(0).max(20),
   maxCandidatesPerPage: z.coerce.number().int().min(1).max(100), riskMode: z.enum(['safe', 'standard']),
   visualViewports: z.array(z.enum(['desktop', 'tablet', 'mobile'])).min(1).max(3), visualBaselinePath: z.string().min(1), updateVisualBaseline: z.boolean(),
   recordVideo: z.boolean(), evidenceReport: z.boolean(),
@@ -86,7 +89,7 @@ const schema = z.object({
 });
 
 const options = schema.parse({
-  url: raw.url, maxActions: raw.maxActions, maxDepth: raw.maxDepth, maxCandidatesPerPage: raw.maxCandidatesPerPage, riskMode: raw.riskMode,
+  url: raw.url, routesFile: raw.routesFile, maxActions: raw.maxActions, maxDepth: raw.maxDepth, maxCandidatesPerPage: raw.maxCandidatesPerPage, riskMode: raw.riskMode,
   visualViewports, visualBaselinePath: raw.visualBaseline, updateVisualBaseline: raw.updateVisualBaseline,
   recordVideo: raw.recordVideo, evidenceReport: raw.evidenceReport,
   apiMode: raw.apiMode, maxApiOperations: raw.maxApiOperations,
@@ -104,8 +107,12 @@ const options = schema.parse({
   headed: raw.headed, output: raw.output, allowCrossOrigin: raw.allowCrossOrigin,
 });
 
+const routeSeeds = options.routesFile
+  ? normalizeRouteSeeds(options.url, parseRouteManifest(await readFile(options.routesFile, 'utf8')).routes, !options.allowCrossOrigin)
+  : [];
+
 const result = await new QaManager().run({
-  url: options.url, maxActions: options.maxActions, maxDepth: options.maxDepth, maxCandidatesPerPage: options.maxCandidatesPerPage,
+  url: options.url, routeSeeds, maxActions: options.maxActions, maxDepth: options.maxDepth, maxCandidatesPerPage: options.maxCandidatesPerPage,
   headless: !options.headed, outputDir: options.output, sameOriginOnly: !options.allowCrossOrigin, riskMode: options.riskMode,
   visualViewports: options.visualViewports, visualBaselinePath: options.visualBaselinePath, updateVisualBaseline: options.updateVisualBaseline,
   recordVideo: options.recordVideo, evidenceReport: options.evidenceReport,
@@ -124,6 +131,7 @@ console.log(JSON.stringify({
   planner: options.plannerEndpoint ? 'http-model' : options.minimaxApiKey ? `minimax-cn:${options.minimaxModel}` : 'heuristic',
   uxReasoner: options.uxEndpoint ? 'http-reasoner' : options.minimaxApiKey ? `minimax-cn:${options.minimaxModel}` : 'deterministic-only',
   visualEvidence: options.visualEndpoint ? 'http-provider' : 'geometry-only',
+  routeManifest: { enabled: Boolean(options.routesFile), seeded: routeSeeds.length },
   visualViewports: options.visualViewports, visualBaseline: result.visualBaseline, api: result.api, correlation: result.correlation,
   semanticState: result.semanticState, device: result.device, githubQa: result.githubQa, controlPlane: result.controlPlane, ux: result.ux, uxLearning: result.uxLearning,
   report: result.report,
