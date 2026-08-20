@@ -14,6 +14,7 @@ export class EvidenceStore {
   async init(): Promise<void> {
     await mkdir(this.runDir, { recursive: true });
     await mkdir(path.join(this.runDir, 'screenshots'), { recursive: true });
+    await mkdir(path.join(this.runDir, 'videos'), { recursive: true });
   }
 
   async screenshot(page: Page, label: string): Promise<string> {
