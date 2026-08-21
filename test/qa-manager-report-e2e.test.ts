@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!enabled)('QaManager beta7 evidence report E2E', () => {
-  it('produces a self-contained report bundle with a real screenshot, viewport video, and lossless finding clusters', async () => {
+  it('produces a self-contained report bundle with real evidence, explainable coverage, and lossless finding clusters', async () => {
     const server = createServer((_request, response) => {
       response.statusCode = 200;
       response.setHeader('content-type', 'text/html; charset=utf-8');
@@ -58,6 +58,8 @@ describe.skipIf(!enabled)('QaManager beta7 evidence report E2E', () => {
     expect(result.findingClusters?.rawFindings).toBe(result.findings.length);
     expect(result.findingClusters?.items.flatMap((cluster) => cluster.memberFindingIds)).toHaveLength(result.findings.length);
     expect(result.findingClusters?.clusters).toBeGreaterThan(0);
+    expect(result.coverage.eligibleInteractionCoverage).toBeTypeOf('number');
+    expect(result.coverage.unexplainedEligibleGaps).toBe(0);
     expect(result.report?.enabled).toBe(true);
     expect(result.report?.videos).toBe(1);
     expect(result.report?.findings).toBeGreaterThan(0);
@@ -67,11 +69,22 @@ describe.skipIf(!enabled)('QaManager beta7 evidence report E2E', () => {
     if (!htmlPath || !dataPath) throw new Error('report paths unavailable');
     expect((await stat(htmlPath)).size).toBeGreaterThan(1000);
     const html = await readFile(htmlPath, 'utf8');
-    const data = await readFile(dataPath, 'utf8');
+    const dataText = await readFile(dataPath, 'utf8');
+    const data = JSON.parse(dataText) as {
+      run: { rawInteractionCoverage: number; eligibleInteractionCoverage: number; unexplainedEligibleGaps: number };
+      findingClusters?: { rawFindings: number; clusters: number };
+    };
     expect(html).toContain('Visible text is clipped');
     expect(html).toContain('../screenshots/');
     expect(html).toContain('../videos/');
-    expect(data).toContain('"classification": "product-defect"');
-    expect(data).toContain('"sourceMapping"');
+    expect(html).toContain('Eligible interaction coverage');
+    expect(html).toContain('Finding clusters');
+    expect(dataText).toContain('"classification": "product-defect"');
+    expect(dataText).toContain('"sourceMapping"');
+    expect(data.run.rawInteractionCoverage).toBe(result.coverage.rawInteractionCoverage);
+    expect(data.run.eligibleInteractionCoverage).toBe(result.coverage.eligibleInteractionCoverage);
+    expect(data.run.unexplainedEligibleGaps).toBe(0);
+    expect(data.findingClusters?.rawFindings).toBe(result.findings.length);
+    expect(data.findingClusters?.clusters).toBe(result.findingClusters?.clusters);
   }, 30_000);
 });
