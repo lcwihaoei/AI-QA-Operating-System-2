@@ -126,17 +126,44 @@ const result = await new QaManager().run({
   minimaxApiKey: options.minimaxApiKey, minimaxModel: options.minimaxModel, minimaxBaseUrl: options.minimaxBaseUrl,
 });
 
+const clusterSummary = result.findingClusters
+  ? {
+      rawFindings: result.findingClusters.rawFindings,
+      clusters: result.findingClusters.clusters,
+      duplicateFindings: result.findingClusters.duplicateFindings,
+    }
+  : undefined;
+
 console.log(JSON.stringify({
   runId: result.runId,
+  // Legacy labels remain for Beta.9 consumers; the structured execution fields
+  // below are authoritative for whether configured AI actually participated.
   planner: options.plannerEndpoint ? 'http-model' : options.minimaxApiKey ? `minimax-cn:${options.minimaxModel}` : 'heuristic',
+  plannerExecution: result.planner,
   uxReasoner: options.uxEndpoint ? 'http-reasoner' : options.minimaxApiKey ? `minimax-cn:${options.minimaxModel}` : 'deterministic-only',
+  uxReasonerExecution: result.ux?.reasonerStatus,
   visualEvidence: options.visualEndpoint ? 'http-provider' : 'geometry-only',
   routeManifest: { enabled: Boolean(options.routesFile), seeded: routeSeeds.length },
   visualViewports: options.visualViewports, visualBaseline: result.visualBaseline, api: result.api, correlation: result.correlation,
   semanticState: result.semanticState, device: result.device, githubQa: result.githubQa, controlPlane: result.controlPlane, ux: result.ux, uxLearning: result.uxLearning,
   report: result.report,
   visited: result.visitedUrls.length, actions: result.actions,
-  coverage: { score: result.coverage.score, pageCoverage: result.coverage.pageCoverage, interactionCoverage: result.coverage.interactionCoverage, gaps: result.coverage.gaps.slice(0, 10) },
+  coverage: {
+    score: result.coverage.score,
+    pageCoverage: result.coverage.pageCoverage,
+    interactionCoverage: result.coverage.interactionCoverage,
+    rawInteractionCoverage: result.coverage.rawInteractionCoverage ?? result.coverage.interactionCoverage,
+    eligibleInteractionCoverage: result.coverage.eligibleInteractionCoverage ?? result.coverage.interactionCoverage,
+    discoveredInteractions: result.coverage.discoveredInteractions,
+    allowedInteractions: result.coverage.allowedInteractions,
+    eligibleInteractions: result.coverage.eligibleInteractions,
+    exercisedEligibleInteractions: result.coverage.exercisedEligibleInteractions,
+    explainedEligibleGaps: result.coverage.explainedEligibleGaps,
+    unexplainedEligibleGaps: result.coverage.unexplainedEligibleGaps,
+    gapReasonCounts: result.coverage.gapReasonCounts,
+    gaps: result.coverage.gaps.slice(0, 10),
+  },
+  findingClusters: clusterSummary,
   findings: result.findings.map(({ id, severity, title, url }) => ({ id, severity, title, url })), outputDir: result.outputDir,
 }, null, 2));
 if (result.findings.some((finding) => finding.severity === 'critical' || finding.severity === 'high')) process.exitCode = 2;
