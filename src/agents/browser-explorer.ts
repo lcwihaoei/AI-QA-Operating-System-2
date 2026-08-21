@@ -2,6 +2,7 @@ import { chromium, type Browser, type Locator, type Page } from '@playwright/tes
 import type { BrowserStorageState } from '../core/browser-state.js';
 import type { EvidenceStore } from '../evidence/evidence-store.js';
 import type { ExplorationCandidate, QaEvent, QaRunOptions } from '../core/types.js';
+import { clickabilityPreflight } from '../planning/clickability-preflight.js';
 import { CoverageGraph } from '../planning/coverage-graph.js';
 import { selectExplorationPlans } from '../planning/exploration-selection.js';
 import { PageStateAnalyzer } from '../planning/page-state-analyzer.js';
@@ -460,16 +461,36 @@ export class BrowserExplorer {
     }
 
     const before = this.normalizeUrl(page.url());
+    const preflight = await clickabilityPreflight(locator);
+    if (!preflight.clickable) {
+      const reason = preflight.reason === 'pointer-intercepted'
+        ? 'pointer-intercepted'
+        : preflight.reason === 'not-rendered' || preflight.reason === 'outside-viewport'
+          ? 'not-visible'
+          : 'execution-error';
+      this.coverage.markCandidateTerminal(before, candidate.id, reason, preflight.detail ?? preflight.reason);
+      events.push(this.event('action', before, `Skip ${reason} button candidate: ${candidate.label || candidate.id}`, {
+        candidateId: candidate.id,
+        clickabilityPreflight: true,
+        preflightReason: preflight.reason,
+        preflightDetail: preflight.detail,
+        terminalGap: true,
+        gapReason: reason,
+      }));
+      return { exercised: false };
+    }
+
     events.push(this.event('action', before, `Click button: ${candidate.label || 'unnamed-button'}`, {
       candidateId: candidate.id,
       actionNumber,
+      clickabilityPreflight: true,
     }));
 
-    const clicked = await locator.click({ timeout: 3_000 }).then(() => true).catch((error: unknown) => {
+    const clicked = await locator.click({ timeout: 1_500 }).then(() => true).catch((error: unknown) => {
       const message = String(error);
       const intercepted = /intercept|receives pointer events/i.test(message);
-      this.coverage.markCandidateTerminal(before, candidate.id, intercepted ? 'pointer-intercepted' : 'execution-error', intercepted ? 'click hit target was intercepted' : 'button probe failed');
-      events.push(this.event('page-error', before, `Button probe failed: ${message}`, { candidateId: candidate.id }));
+      this.coverage.markCandidateTerminal(before, candidate.id, intercepted ? 'pointer-intercepted' : 'execution-error', intercepted ? 'click hit target was intercepted after preflight' : 'button probe failed after preflight');
+      events.push(this.event('page-error', before, `Button probe failed: ${message}`, { candidateId: candidate.id, clickabilityPreflight: true }));
       return false;
     });
     if (!clicked) return { exercised: false };
