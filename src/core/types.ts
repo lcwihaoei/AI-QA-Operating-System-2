@@ -141,6 +141,20 @@ export interface CoverageSnapshot {
   terminalGaps?: CoverageTerminalGap[];
 }
 
+export type PlannerExecutionOutcome = 'not-configured' | 'skipped' | 'active' | 'partial-fallback' | 'unavailable';
+
+export interface PlannerExecutionSummary {
+  configured: boolean;
+  status: PlannerExecutionOutcome;
+  pagesObserved: number;
+  pagesAttempted: number;
+  pagesModelUsed: number;
+  pagesFallback: number;
+  repairAttempts: number;
+  failedCalls: number;
+  providers: string[];
+}
+
 export interface VisualBaselineSummary {
   enabled: boolean;
   path?: string;
@@ -318,6 +332,7 @@ export interface QaRunResult {
   findings: Finding[];
   findingClusters?: FindingClusterSummary;
   coverage: CoverageSnapshot;
+  planner?: PlannerExecutionSummary;
   visualBaseline: VisualBaselineSummary;
   api: ApiQaSummary;
   correlation: CausalCorrelationSummary;
