@@ -180,15 +180,15 @@ export class BrowserExplorer {
             if (!next) continue;
             if (options.sameOriginOnly && new URL(next).origin !== origin) continue;
             if (visited.has(next)) {
-              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'route-already-covered');
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'navigation-duplicate', 'target route already covered');
               continue;
             }
             if (queuedUrls.has(next)) {
-              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'route-already-queued');
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'navigation-duplicate', 'target route already queued');
               continue;
             }
             if (item.depth >= options.maxDepth) {
-              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'navigation-depth-limit');
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'budget-exhausted', 'navigation depth limit reached');
               continue;
             }
             this.coverage.discoverPage(next, item.depth + 1);
@@ -200,9 +200,6 @@ export class BrowserExplorer {
             queuedUrls.add(next);
           }
 
-          // Execute at most one interaction from a DOM snapshot. Any successful
-          // field/button action invalidates the remaining locator-index plan and
-          // forces a fresh candidate collection + ranking pass.
           for (const plan of selected.interactions) {
             if (actions >= options.maxActions) break;
             const candidate = plan.candidate;
@@ -257,10 +254,11 @@ export class BrowserExplorer {
         }
 
         if (shouldReplan && interactionRound >= maxInteractionRounds) {
-          this.coverage.markRemainingEligibleTerminal('interaction-round-budget-exhausted', actualUrl);
+          this.coverage.markRemainingEligibleTerminal('budget-exhausted', actualUrl, 'per-page interaction-round budget reached');
           events.push(this.event('planner', actualUrl, 'Stopped state replanning at the per-page interaction-round budget', {
             terminalGap: true,
-            gapReason: 'interaction-round-budget-exhausted',
+            gapReason: 'budget-exhausted',
+            gapDetail: 'per-page interaction-round budget reached',
             interactionRounds: interactionRound,
             maxInteractionRounds,
           }));
@@ -268,10 +266,11 @@ export class BrowserExplorer {
       }
 
       if (actions >= options.maxActions) {
-        this.coverage.markRemainingEligibleTerminal('action-budget-exhausted');
+        this.coverage.markRemainingEligibleTerminal('budget-exhausted', undefined, 'global action budget reached');
         events.push(this.event('planner', explorationUrl(visited, startUrl), 'Stopped exploration at the global action budget', {
           terminalGap: true,
-          gapReason: 'action-budget-exhausted',
+          gapReason: 'budget-exhausted',
+          gapDetail: 'global action budget reached',
           actions,
           maxActions: options.maxActions,
         }));
@@ -289,7 +288,7 @@ export class BrowserExplorer {
   private markSiblingPlansInvalidated(url: string, plans: Array<{ candidate: ExplorationCandidate }>, exercisedId: string): void {
     for (const plan of plans) {
       if (plan.candidate.id === exercisedId) continue;
-      this.coverage.markCandidateTerminal(url, plan.candidate.id, 'state-invalidated');
+      this.coverage.markCandidateTerminal(url, plan.candidate.id, 'stale-after-state-change', 'remaining plan invalidated after a material UI state transition');
     }
   }
 
@@ -381,24 +380,24 @@ export class BrowserExplorer {
   private async probeField(page: Page, candidate: ExplorationCandidate, events: QaEvent[], actionNumber: number): Promise<boolean> {
     const locator = this.candidateLocator(page, candidate);
     if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
-      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-candidate');
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-after-state-change', 'candidate is no longer visible/enabled or no longer matches the current locator occupant');
       events.push(this.event('action', page.url(), `Skip stale/unavailable field candidate: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         staleCandidate: true,
         terminalGap: true,
-        gapReason: 'stale-candidate',
+        gapReason: 'stale-after-state-change',
       }));
       return false;
     }
 
     const strategy = this.inputStrategy.plan(candidate);
     if (strategy.action === 'skip') {
-      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'unsupported-field');
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'unsupported-control', strategy.reason);
       events.push(this.event('action', page.url(), `Skip unsupported field: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         reason: strategy.reason,
         terminalGap: true,
-        gapReason: 'unsupported-field',
+        gapReason: 'unsupported-control',
       }));
       return false;
     }
@@ -413,6 +412,7 @@ export class BrowserExplorer {
 
     if (strategy.action === 'fill') {
       const filled = await locator.fill(strategy.value, { timeout: 3_000 }).then(() => true).catch((error: unknown) => {
+        this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'execution-error', 'synthetic field fill failed');
         events.push(this.event('page-error', page.url(), `Synthetic field fill failed: ${String(error)}`, { candidateId: candidate.id }));
         return false;
       });
@@ -424,8 +424,12 @@ export class BrowserExplorer {
           .filter((option) => !option.disabled && option.value);
         return available[1]?.value ?? available[0]?.value ?? null;
       }).catch(() => null);
-      if (!option) return false;
+      if (!option) {
+        this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'unsupported-control', 'select has no safe enabled option');
+        return false;
+      }
       const selected = await locator.selectOption(option, { timeout: 3_000 }).then(() => true).catch((error: unknown) => {
+        this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'execution-error', 'synthetic select failed');
         events.push(this.event('page-error', page.url(), `Synthetic select failed: ${String(error)}`, { candidateId: candidate.id }));
         return false;
       });
@@ -445,12 +449,12 @@ export class BrowserExplorer {
   ): Promise<{ exercised: boolean; destination?: string }> {
     const locator = this.candidateLocator(page, candidate);
     if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
-      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-candidate');
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-after-state-change', 'candidate is no longer visible/enabled or no longer matches the current locator occupant');
       events.push(this.event('action', page.url(), `Skip stale/unavailable button candidate: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         staleCandidate: true,
         terminalGap: true,
-        gapReason: 'stale-candidate',
+        gapReason: 'stale-after-state-change',
       }));
       return { exercised: false };
     }
@@ -462,7 +466,10 @@ export class BrowserExplorer {
     }));
 
     const clicked = await locator.click({ timeout: 3_000 }).then(() => true).catch((error: unknown) => {
-      events.push(this.event('page-error', before, `Button probe failed: ${String(error)}`, { candidateId: candidate.id }));
+      const message = String(error);
+      const intercepted = /intercept|receives pointer events/i.test(message);
+      this.coverage.markCandidateTerminal(before, candidate.id, intercepted ? 'pointer-intercepted' : 'execution-error', intercepted ? 'click hit target was intercepted' : 'button probe failed');
+      events.push(this.event('page-error', before, `Button probe failed: ${message}`, { candidateId: candidate.id }));
       return false;
     });
     if (!clicked) return { exercised: false };
