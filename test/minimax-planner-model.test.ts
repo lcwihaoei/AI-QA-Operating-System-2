@@ -1,17 +1,18 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MiniMaxPlannerModel } from '../src/providers/minimax-planner-model.js';
+import type { PlannerModelContext } from '../src/planning/planner-model.js';
 
 const servers: Array<ReturnType<typeof createServer>> = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
 
-function context() {
+function context(): PlannerModelContext {
   return {
     pageUrl: 'https://example.com/settings?token=top-secret',
     depth: 1,
-    riskMode: 'safe' as const,
+    riskMode: 'safe',
     pageState: {
       url: 'https://example.com/settings', title: 'Settings', headings: ['Settings'], archetypes: ['form'],
       formCount: 1, fieldCount: 2, searchFieldCount: 0, buttonCount: 1, linkCount: 2,
