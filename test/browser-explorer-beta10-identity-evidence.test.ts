@@ -74,8 +74,11 @@ describe.skipIf(!enabled)('BrowserExplorer Beta.10 identity/evidence contracts',
       <button id="broken" type="button">Broken offscreen action</button>
     `);
     const result = await run(url, 1);
-    const signal = result.events.find((event) => event.kind === 'ui' && event.details?.browserUi === true);
-    expect(signal?.details?.uiKind).toBe('interactive-offscreen');
+    const signal = result.events.find((event) =>
+      event.kind === 'ui'
+      && event.details?.browserUi === true
+      && event.details?.uiKind === 'interactive-offscreen');
+    expect(signal).toBeDefined();
     expect(typeof signal?.details?.interactionStateId).toBe('string');
     expect(typeof signal?.details?.screenshot).toBe('string');
     await expect(access(String(signal?.details?.screenshot))).resolves.toBeUndefined();
