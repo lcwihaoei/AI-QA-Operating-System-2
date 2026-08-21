@@ -83,9 +83,10 @@ jobs:
     env:
       LEEENG_BASELINE_SHA: 62b0f430eaf39d2ad1834ebdab89b6718957b0fc
     steps:
-      - name: Checkout Beta.10 candidate
+      - name: Checkout exact Beta.10 candidate
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           path: aiqa
 
       - name: Check private LeeEngUI access configuration
@@ -130,8 +131,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dogfood/baseline dogfood/.qa-runs
+          AIQA_SHA="$(git -C aiqa rev-parse HEAD)"
+          test "$AIQA_SHA" = "${{ github.event.pull_request.head.sha }}"
           {
-            echo "AIQA_SHA=$(git -C aiqa rev-parse HEAD)"
+            echo "AIQA_SHA=$AIQA_SHA"
+            echo "AIQA_VERSION=$(node -p "require('./aiqa/package.json').version")"
             echo "LEEENG_SHA=$(git -C leeeng rev-parse HEAD)"
             echo "NODE=$(node --version)"
             echo "NPM=$(npm --version)"
@@ -230,82 +234,32 @@ jobs:
           set -euo pipefail
           RESULT="$(find dogfood/.qa-runs -type f -name result.json | sort | tail -n 1)"
           test -n "$RESULT"
-          RESULT="$RESULT" node <<'NODE'
-          const fs = require('fs');
-          const resultPath = process.env.RESULT;
-          const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
-          const findings = result.findings || [];
-          const events = result.events || [];
-          const paths = new Set((result.visitedUrls || []).map((value) => new URL(value).pathname));
-          const requiredPaths = ['/', '/component-test', '/system-status', '/not-found', '/fallback-unknown-route'];
-          const missingPaths = requiredPaths.filter((value) => !paths.has(value));
-          const manifestSeedEvents = events.filter((event) => event.details?.routeManifestSeed === true);
-          const visualUi = events.filter((event) => event.kind === 'ui' && event.details?.visual === true);
-          const collapsedPattern = /(app-tab-content|app-menubar-tabs|appMenubar|side-menubar|navbar-brand-text|menu-link)/i;
-          const defectPattern = /(offscreen|unreachable|clipped|overlap|outside viewport)/i;
-          const collapsedSidebarEvents = events.filter((event) => {
-            const haystack = `${event.message || ''} ${event.details?.element || ''} ${event.details?.relatedElement || ''}`;
-            return event.kind === 'ui' && collapsedPattern.test(haystack) && defectPattern.test(haystack);
-          });
-          const counts = findings.reduce((acc, finding) => {
-            acc[finding.severity] = (acc[finding.severity] || 0) + 1;
-            return acc;
-          }, {});
-          const eligibleCoverage = result.coverage?.eligibleInteractionCoverage ?? result.coverage?.interactionCoverage ?? 0;
-          const unexplainedEligibleGaps = result.coverage?.unexplainedEligibleGaps ?? 0;
-          const summary = {
-            aiqaRunId: result.runId,
-            visitedUrls: [...paths].sort(),
-            missingRequiredPaths: missingPaths,
-            actions: result.actions,
-            coverage: result.coverage,
-            eligibleInteractionCoverage: eligibleCoverage,
-            unexplainedEligibleGaps,
-            totalFindings: findings.length,
-            findingCounts: counts,
-            findingClusters: result.findingClusters,
-            beta9ReferenceFindings: 124,
-            visualUiEvents: visualUi.length,
-            manifestSeedEvents: manifestSeedEvents.length,
-            collapsedSidebarRegressionEvents: collapsedSidebarEvents.map((event) => ({
-              message: event.message,
-              url: event.url,
-              viewport: event.details?.viewport,
-              element: event.details?.element,
-            })),
-            report: result.report,
-          };
-          fs.writeFileSync('dogfood/beta10-dogfood-summary.json', `${JSON.stringify(summary, null, 2)}\n`);
-          console.log(JSON.stringify(summary, null, 2));
-          if (missingPaths.length) {
-            console.error(`Missing required route-manifest coverage: ${missingPaths.join(', ')}`);
-            process.exit(1);
-          }
-          if (manifestSeedEvents.length < 1) {
-            console.error('No route-manifest seeded navigation was recorded.');
-            process.exit(1);
-          }
-          if (collapsedSidebarEvents.length > 0) {
-            console.error(`Collapsed-sidebar regression remains: ${collapsedSidebarEvents.length} event(s).`);
-            process.exit(1);
-          }
-          if (unexplainedEligibleGaps !== 0) {
-            console.error(`Eligible interaction coverage has ${unexplainedEligibleGaps} unexplained gap(s).`);
-            process.exit(1);
-          }
-          if (eligibleCoverage < 80) {
-            console.error(`Eligible interaction coverage ${eligibleCoverage}% is below the Beta.10 80% acceptance target.`);
-            process.exit(1);
-          }
-          if (!result.findingClusters || result.findingClusters.rawFindings !== findings.length) {
-            console.error('Finding clustering did not preserve raw finding cardinality.');
-            process.exit(1);
-          }
-          if (!result.report?.enabled || !result.report?.htmlPath || (result.report?.videos ?? 0) < 3) {
-            console.error('Evidence report/video contract was not satisfied.');
-            process.exit(1);
-          }
-          NODE
+          RESULT="$(realpath "$RESULT")"
+          REPORT_DATA="$(RESULT="$RESULT" node -e "const r=require(process.env.RESULT); if(!r.report?.dataPath) process.exit(2); process.stdout.write(r.report.dataPath)")"
+          test -f "$REPORT_DATA"
+          AIQA_SHA="$(git -C aiqa rev-parse HEAD)"
+          AIQA_VERSION="$(node -p "require('./aiqa/package.json').version")"
+
+          set +e
+          (
+            cd aiqa
+            npm run --silent dogfood:verify -- \
+              --result "$RESULT" \
+              --report-data "$REPORT_DATA" \
+              --required-route / /component-test /system-status /not-found /fallback-unknown-route \
+              --require-route-manifest-evidence \
+              --min-eligible-coverage 80 \
+              --min-videos 3 \
+              --candidate-sha "$AIQA_SHA" \
+              --expected-candidate-sha "${{ github.event.pull_request.head.sha }}"
+          ) | tee dogfood/beta10-dogfood-verification.json
+          verifier_code=${PIPESTATUS[0]}
+          set -e
+          if [ "$verifier_code" -ne 0 ]; then
+            echo "Beta.10 dogfood verifier did not PASS (exit=$verifier_code)." >&2
+            exit "$verifier_code"
+          fi
+          printf '%s\n' "$AIQA_VERSION" > dogfood/candidate-version.txt
 
       - name: Upload real-project dogfood evidence
         if: always()
