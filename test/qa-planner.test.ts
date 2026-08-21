@@ -35,11 +35,18 @@ describe('QaPlanner', () => {
   it('prioritizes safe novel coverage and places blocked controls last', async () => {
     const graph = new CoverageGraph();
     graph.visitPage('https://example.com/', 0);
-    const { plans } = await new QaPlanner(graph).rank('https://example.com/', 0, candidates, 'safe');
+    const ranking = await new QaPlanner(graph).rank('https://example.com/', 0, candidates, 'safe');
 
-    expect(plans[0]?.candidate.label).toBe('Settings');
-    expect(plans.at(-1)?.candidate.label).toBe('Delete account');
-    expect(plans.at(-1)?.decision.allowed).toBe(false);
+    expect(ranking.plans[0]?.candidate.label).toBe('Settings');
+    expect(ranking.plans.at(-1)?.candidate.label).toBe('Delete account');
+    expect(ranking.plans.at(-1)?.decision.allowed).toBe(false);
+    expect(ranking.modelStatus).toMatchObject({
+      configured: false,
+      attempted: false,
+      used: false,
+      fallbackUsed: false,
+      outcome: 'not-configured',
+    });
   });
 
   it('lets a model reprioritize safe candidates but never unlock blocked actions', async () => {
@@ -58,13 +65,20 @@ describe('QaPlanner', () => {
     const ranking = await new QaPlanner(graph, undefined, model).rank('https://example.com/', 0, candidates, 'safe');
 
     expect(ranking.modelUsed).toBe(true);
+    expect(ranking.modelStatus).toMatchObject({
+      configured: true,
+      attempted: true,
+      used: true,
+      fallbackUsed: false,
+      outcome: 'used',
+    });
     expect(ranking.plans[0]?.candidate.label).toBe('Home');
     const blocked = ranking.plans.find((plan) => plan.candidate.label === 'Delete account');
     expect(blocked?.decision.allowed).toBe(false);
     expect(blocked?.score).toBe(-1000);
   });
 
-  it('falls back to heuristic ordering when the model fails', async () => {
+  it('falls back to heuristic ordering when the model fails and preserves the diagnostic', async () => {
     const model: PlannerModel = {
       async recommend() {
         throw new Error('model unavailable');
@@ -75,6 +89,32 @@ describe('QaPlanner', () => {
     const ranking = await new QaPlanner(graph, undefined, model).rank('https://example.com/', 0, candidates, 'safe');
     expect(ranking.modelUsed).toBe(false);
     expect(ranking.modelError).toContain('model unavailable');
+    expect(ranking.modelStatus).toMatchObject({
+      configured: true,
+      attempted: true,
+      used: false,
+      fallbackUsed: true,
+      outcome: 'fallback',
+    });
+    expect(ranking.modelStatus.error).toContain('model unavailable');
     expect(ranking.plans[0]?.candidate.label).toBe('Settings');
+  });
+
+  it('reports a configured model as explicitly skipped when there are no candidates', async () => {
+    const model: PlannerModel = {
+      async recommend() {
+        throw new Error('should not be called');
+      },
+    };
+    const graph = new CoverageGraph();
+    const ranking = await new QaPlanner(graph, undefined, model).rank('https://example.com/empty', 0, [], 'safe');
+    expect(ranking.modelStatus).toMatchObject({
+      configured: true,
+      attempted: false,
+      used: false,
+      fallbackUsed: false,
+      outcome: 'skipped',
+    });
+    expect(ranking.modelStatus.skipReason).toContain('no planner candidates');
   });
 });
