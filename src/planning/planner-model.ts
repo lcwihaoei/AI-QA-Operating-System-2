@@ -30,8 +30,14 @@ export interface PlannerModelRecommendation {
   reason?: string;
 }
 
+export interface PlannerModelExecutionMetadata {
+  provider?: string;
+  repairAttempted: boolean;
+}
+
 export interface PlannerModel {
   recommend(context: PlannerModelContext): Promise<PlannerModelRecommendation[]>;
+  getLastExecutionMetadata?(): PlannerModelExecutionMetadata | undefined;
 }
 
 export interface PlannerRankingResult {
