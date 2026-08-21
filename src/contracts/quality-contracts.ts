@@ -33,6 +33,7 @@ export interface PageStateObservation {
 
 export type ModelExecutionOutcome =
   | 'not-configured'
+  | 'skipped'
   | 'used'
   | 'repaired-and-used'
   | 'fallback'
@@ -47,6 +48,7 @@ export interface ModelExecutionStatus {
   outcome: ModelExecutionOutcome;
   provider?: string;
   error?: string;
+  skipReason?: string;
 }
 
 export function assertModelExecutionStatus(status: ModelExecutionStatus): void {
@@ -57,8 +59,14 @@ export function assertModelExecutionStatus(status: ModelExecutionStatus): void {
   if ((status.outcome === 'fallback' || status.outcome === 'failed') && !status.error) {
     throw new Error(`${status.outcome} model status must preserve an error diagnostic`);
   }
-  if (status.outcome === 'not-configured' && (status.configured || status.attempted || status.used || status.fallbackUsed)) {
+  if (status.outcome === 'not-configured' && (status.configured || status.attempted || status.used || status.fallbackUsed || status.repairAttempted)) {
     throw new Error('not-configured outcome conflicts with execution flags');
+  }
+  if (status.outcome === 'skipped') {
+    if (!status.configured || status.attempted || status.used || status.fallbackUsed || status.repairAttempted) {
+      throw new Error('skipped outcome requires a configured but unattempted model');
+    }
+    if (!status.skipReason) throw new Error('skipped model status requires an explicit reason');
   }
   if (status.outcome === 'used' && (!status.used || status.repairAttempted || status.fallbackUsed)) {
     throw new Error('used outcome conflicts with execution flags');
