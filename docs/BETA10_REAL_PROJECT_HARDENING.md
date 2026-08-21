@@ -2,6 +2,15 @@
 
 Beta.10 is an evidence-driven hardening release. It starts from the immutable `v0.10.0-beta.9` prerelease and uses real-project dogfood failures as release criteria instead of adding broad new autonomous capabilities.
 
+## Implementation specification
+
+The implementation contract is now split into:
+
+- [`BETA10_PRD.md`](./BETA10_PRD.md) — product requirements, architecture boundaries, data/CLI/report requirements and release acceptance criteria;
+- [`BETA10_TASK_BREAKDOWN.md`](./BETA10_TASK_BREAKDOWN.md) — ordered Sprint 0–8 execution plan with dependencies and definition of done.
+
+The newer clean-room Beta.9 LeeEngUI validation adds three release-blocking requirements to the original hardening scope: visible model fallback/schema repair, explicit UX reasoner attempt/error diagnostics, and correct report percentage units. It also establishes interaction-state refresh/eligible coverage as the main exploration-quality work for Beta.10.
+
 ## First real-project evidence: LeeEngUI
 
 The first Beta.9 frontend dogfood used LeeEngUI as a React/Vite target and verified the release tag/SHA before execution.
@@ -14,6 +23,8 @@ Observed behavior:
 - 124 unique visual findings were reviewed as QA-engine false positives rather than LeeEngUI product defects;
 - the dominant false-positive pattern was intentionally tucked/collapsed responsive sidebar content remaining mounted in the DOM;
 - Beta.9 governance correctly stopped at the missing fix-model gateway instead of self-approving or mutating the target repository.
+
+A later clean-room re-run against the immutable Beta.9 tag produced 74 findings with 100% route coverage but only 14% heuristic interaction coverage. A second run with MiniMax configured produced the same 74 visual findings, 7 actions and 16% interaction coverage. The first planner call failed the expected `recommendations` schema and silently fell back, while UX output exposed only `reasonerUsed:false` without the caught error. The generated HTML also rendered percentage-point values as 10000%/1600%, establishing a report correctness regression that Beta.10 must fix.
 
 ## Beta.10 acceptance tracks
 
@@ -56,7 +67,9 @@ Before Beta.10 is tagged, repeat the LeeEngUI frontend dogfood using the same re
 - manual confirmation of medium/high findings;
 - governance stop at the model/approval boundary unless a real configured fix provider is present.
 
-The prior 124 offcanvas/sidebar false positives must no longer reproduce. The run must also demonstrate that genuine visible geometry defects are still detectable.
+The prior offcanvas/sidebar false-positive cluster must no longer reproduce. The run must also demonstrate that genuine visible geometry defects are still detectable.
+
+The clean-room comparison additionally requires explainable eligible interaction coverage, explicit model fallback state, explicit UX reasoner attempt/error state, and numerically correct reports.
 
 Tracking: #8.
 
@@ -82,4 +95,7 @@ Beta.10 is release-ready only when:
 4. a clean clone supports the documented deterministic install path;
 5. Beta.9 governance/correlation regressions remain green;
 6. LeeEngUI is dogfooded again and the visual false-positive cluster is eliminated without reducing genuine-defect detection;
-7. release packaging/checksum/tag-only gates pass on the exact candidate SHA.
+7. planner/UX model execution is observable and no fallback is silent;
+8. interaction coverage is state-aware and every remaining eligible gap has a machine-readable reason;
+9. report HTML/JSON/Markdown metrics use consistent percentage units;
+10. release packaging/checksum/tag-only gates pass on the exact candidate SHA.
