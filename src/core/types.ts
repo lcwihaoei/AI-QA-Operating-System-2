@@ -83,6 +83,25 @@ export interface PlannedCandidate {
   score: number;
 }
 
+export type CoverageTerminalReason =
+  | 'state-invalidated'
+  | 'stale-candidate'
+  | 'unsupported-field'
+  | 'navigation-depth-limit'
+  | 'route-already-covered'
+  | 'route-already-queued'
+  | 'interaction-round-budget-exhausted'
+  | 'action-budget-exhausted';
+
+export interface CoverageTerminalGap {
+  scope: 'interaction';
+  url: string;
+  candidateId: string;
+  label: string;
+  reason: CoverageTerminalReason;
+  explained: true;
+}
+
 export interface CoveragePageSnapshot {
   url: string;
   depth: number;
@@ -90,7 +109,10 @@ export interface CoveragePageSnapshot {
   visits: number;
   discoveredCandidates: number;
   actionableCandidates: number;
+  eligibleCandidates: number;
   exercisedCandidates: number;
+  terminalEligibleCandidates: number;
+  unexplainedEligibleCandidates: number;
   blockedCandidates: number;
   errors: number;
 }
@@ -99,8 +121,13 @@ export interface CoverageSnapshot {
   score: number;
   pageCoverage: number;
   interactionCoverage: number;
+  eligibleInteractions: number;
+  exercisedEligibleInteractions: number;
+  explainedEligibleGaps: number;
+  unexplainedEligibleGaps: number;
   pages: CoveragePageSnapshot[];
   gaps: string[];
+  terminalGaps: CoverageTerminalGap[];
 }
 
 export interface VisualBaselineSummary {
