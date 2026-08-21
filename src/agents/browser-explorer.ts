@@ -127,6 +127,7 @@ export class BrowserExplorer {
           blocked: blockedPlans.length,
           selectedNavigation: selected.navigation.length,
           selectedInteractions: selected.interactions.length,
+          modelStatus: ranking.modelStatus,
           modelUsed: ranking.modelUsed,
           modelError: ranking.modelError,
           archetypes: pageState.archetypes,
