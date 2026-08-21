@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { QaRunResult, Severity } from '../core/types.js';
+import type { PlannerExecutionOutcome, QaRunResult, Severity } from '../core/types.js';
 
 export type ControlJobStatus = 'queued' | 'leased' | 'completed' | 'failed';
 export type WorkerStatus = 'online' | 'busy' | 'offline';
@@ -15,7 +15,7 @@ export interface ControlRunRecord {
   rawInteractionCoverage?: number;
   eligibleInteractionCoverage?: number;
   unexplainedEligibleGaps?: number;
-  plannerStatus?: QaRunResult['planner'] extends infer P ? P extends { status: infer S } ? S : never : never;
+  plannerStatus?: PlannerExecutionOutcome;
   plannerPagesModelUsed?: number;
   plannerPagesAttempted?: number;
   plannerFallbackPages?: number;
