@@ -1,3 +1,4 @@
+import type { ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { DeviceMode, DevicePlatform } from '../device/device-provider.js';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -205,6 +206,8 @@ export interface UxIntelligenceSummary {
   highImpact: number;
   mediumImpact: number;
   lowImpact: number;
+  reasonerStatus: ModelExecutionStatus;
+  /** @deprecated Read reasonerStatus.used. Kept for Beta.9 result compatibility. */
   reasonerUsed: boolean;
   opportunityPath?: string;
   toolingError?: string;
