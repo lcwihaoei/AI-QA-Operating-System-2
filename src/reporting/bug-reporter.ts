@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { EvidenceTruthAssessment } from '../contracts/quality-contracts.js';
 import type { Finding, FindingKind, QaEvent, Severity } from '../core/types.js';
 
 function hintedSeverity(event: QaEvent): Severity | undefined {
@@ -107,6 +108,12 @@ function deviceReproduction(event: QaEvent): string[] | undefined {
   ];
 }
 
+function truthForEvent(event: QaEvent): EvidenceTruthAssessment | undefined {
+  const value = event.details?.truthAssessment;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as EvidenceTruthAssessment;
+}
+
 export function fingerprintFinding(kind: string, url: string, message: string): string {
   return createHash('sha1')
     .update(`${kind}|${new URL(url).pathname}|${message.replace(/\d+/g, '#').slice(0, 500)}`)
@@ -142,6 +149,7 @@ export function findingsFromEvents(events: QaEvent[]): Finding[] {
     const reproduction = deviceReproduction(event) ?? semanticReproduction(event) ?? correlatedSteps ?? (event.details?.api === true
       ? [`Send the API request recorded immediately before this event to ${event.url}`, 'Compare the response with the OpenAPI contract recorded in events.json']
       : [`Open ${event.url}`, 'Repeat the action recorded immediately before the event in events.json']);
+    const truth = truthForEvent(event);
 
     byFingerprint.set(fingerprint, {
       id: `BUG-${String(byFingerprint.size + 1).padStart(4, '0')}`,
@@ -153,6 +161,7 @@ export function findingsFromEvents(events: QaEvent[]): Finding[] {
       reproduction,
       evidence: screenshot ? [screenshot] : [],
       fingerprint,
+      ...(truth ? { truth } : {}),
     });
   }
 
