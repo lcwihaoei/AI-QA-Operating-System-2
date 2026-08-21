@@ -13,6 +13,7 @@ program
   .option('--required-route <path...>', 'required application route paths')
   .option('--min-eligible-coverage <number>', 'minimum eligible interaction coverage percentage points', '80')
   .option('--min-videos <number>', 'minimum evidence video count', '3')
+  .option('--require-route-manifest-evidence', 'require at least one route-manifest seeded navigation event')
   .option('--require-model', 'require planner model participation')
   .option('--require-ux-reasoner', 'require explicit configured UX reasoner state')
   .option('--candidate-sha <sha>', 'actual candidate commit SHA recorded by the authorized runner')
@@ -27,6 +28,7 @@ const options = program.opts<{
   requiredRoute?: string[];
   minEligibleCoverage: string;
   minVideos: string;
+  requireRouteManifestEvidence?: boolean;
   requireModel?: boolean;
   requireUxReasoner?: boolean;
   candidateSha?: string;
@@ -43,6 +45,7 @@ const verification = verifyBeta10Dogfood(result, {
   requiredPaths: options.requiredRoute,
   minEligibleCoverage: Number(options.minEligibleCoverage),
   minVideos: Number(options.minVideos),
+  requireRouteManifestEvidence: options.requireRouteManifestEvidence === true,
   requireModel: options.requireModel === true,
   requireUxReasoner: options.requireUxReasoner === true,
   reportData,
