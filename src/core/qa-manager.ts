@@ -52,6 +52,14 @@ function emptyUxSummary(enabled: boolean): UxIntelligenceSummary {
     highImpact: 0,
     mediumImpact: 0,
     lowImpact: 0,
+    reasonerStatus: {
+      configured: false,
+      attempted: false,
+      used: false,
+      repairAttempted: false,
+      fallbackUsed: false,
+      outcome: 'not-configured',
+    },
     reasonerUsed: false,
   };
 }
