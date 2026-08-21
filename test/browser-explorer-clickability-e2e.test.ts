@@ -19,16 +19,18 @@ afterEach(async () => {
 });
 
 describe.skipIf(!enabled)('BrowserExplorer clickability preflight integration', () => {
-  it('records pointer interception as an explained eligible gap without emitting a product page-error', async () => {
+  it('records pointer interception once, preserves its reason, and does not retry it in the same structural state', async () => {
     const server = createServer((_request, response) => {
       response.statusCode = 200;
       response.setHeader('content-type', 'text/html; charset=utf-8');
       response.end(`<!doctype html><html><head><style>
         body { margin: 0; }
         #covered { position: fixed; left: 100px; top: 100px; width: 180px; height: 44px; }
+        #safe { position: fixed; left: 100px; top: 260px; width: 180px; height: 44px; }
         #overlay { position: fixed; left: 80px; top: 80px; width: 240px; height: 100px; z-index: 5; }
       </style></head><body>
-        <button id="covered" type="button">Covered action</button>
+        <button id="covered" type="button">Menu</button>
+        <button id="safe" type="button" onclick="document.body.dataset.safe='done'">Secondary action</button>
         <div id="overlay">Transient overlay</div>
       </body></html>`);
     });
@@ -45,7 +47,7 @@ describe.skipIf(!enabled)('BrowserExplorer clickability preflight integration', 
     const explorer = new BrowserExplorer(evidence, new QaPlanner(coverage), coverage);
     const options: QaRunOptions = {
       url: `http://127.0.0.1:${address.port}/`,
-      maxActions: 5,
+      maxActions: 6,
       maxDepth: 0,
       maxCandidatesPerPage: 4,
       headless: true,
@@ -57,15 +59,18 @@ describe.skipIf(!enabled)('BrowserExplorer clickability preflight integration', 
     };
 
     const result = await explorer.run(options);
-    const preflightSkip = result.events.find((event) =>
+    const preflightSkips = result.events.filter((event) =>
       event.kind === 'action' && event.details?.clickabilityPreflight === true && event.details?.gapReason === 'pointer-intercepted');
-    expect(preflightSkip?.message).toContain('Covered action');
+    expect(preflightSkips).toHaveLength(1);
+    expect(preflightSkips[0]?.message).toContain('Menu');
+    expect(result.events.some((event) => event.kind === 'action' && event.message === 'Click button: Secondary action')).toBe(true);
+    expect(result.events.some((event) => event.kind === 'planner' && Number(event.details?.duplicateStateActionsSkipped ?? 0) >= 1)).toBe(true);
     expect(result.events.some((event) => event.kind === 'page-error' && event.message.startsWith('Button probe failed:'))).toBe(false);
 
     const snapshot = coverage.snapshot();
     expect(snapshot.gapReasonCounts?.['pointer-intercepted']).toBe(1);
     expect(snapshot.explainedEligibleGaps).toBe(1);
     expect(snapshot.unexplainedEligibleGaps).toBe(0);
-    expect(snapshot.eligibleInteractionCoverage).toBe(0);
+    expect(snapshot.eligibleInteractionCoverage).toBe(50);
   }, 15_000);
 });
