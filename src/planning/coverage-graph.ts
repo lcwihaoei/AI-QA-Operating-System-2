@@ -13,6 +13,7 @@ type CandidateState = {
   allowed: boolean;
   exercised: boolean;
   terminalReason?: CoverageTerminalReason;
+  terminalDetail?: string;
 };
 
 type PageState = {
@@ -23,6 +24,21 @@ type PageState = {
   errors: number;
   candidates: Map<string, CandidateState>;
 };
+
+const INELIGIBLE_TERMINAL_REASONS = new Set<CoverageTerminalReason>([
+  'blocked-by-risk-policy',
+  'duplicate-state-action',
+  'stale-after-state-change',
+  'not-visible',
+  'auth-gated',
+  'unsupported-control',
+  'navigation-duplicate',
+]);
+
+function candidateEligible(candidate: CandidateState): boolean {
+  if (!candidate.allowed) return false;
+  return !candidate.terminalReason || !INELIGIBLE_TERMINAL_REASONS.has(candidate.terminalReason);
+}
 
 export class CoverageGraph {
   private readonly pages = new Map<string, PageState>();
@@ -54,9 +70,15 @@ export class CoverageGraph {
       current.risk = risk;
       current.allowed = allowed;
       current.label = candidate.label || candidate.kind;
-      // A candidate observed again in a fresh DOM state is active again. Clear
-      // prior terminal explanations unless the candidate was already exercised.
-      if (!current.exercised) current.terminalReason = undefined;
+      if (current.exercised) return;
+      if (!allowed) {
+        current.terminalReason = 'blocked-by-risk-policy';
+        current.terminalDetail = risk;
+      } else {
+        // Re-observation in a fresh active DOM state reopens the candidate.
+        current.terminalReason = undefined;
+        current.terminalDetail = undefined;
+      }
       return;
     }
     page.candidates.set(candidate.id, {
@@ -65,6 +87,7 @@ export class CoverageGraph {
       risk,
       allowed,
       exercised: false,
+      ...(!allowed ? { terminalReason: 'blocked-by-risk-policy' as const, terminalDetail: risk } : {}),
     });
   }
 
@@ -73,20 +96,30 @@ export class CoverageGraph {
     if (candidate) {
       candidate.exercised = true;
       candidate.terminalReason = undefined;
+      candidate.terminalDetail = undefined;
     }
   }
 
-  markCandidateTerminal(url: string, candidateId: string, reason: CoverageTerminalReason): void {
+  markCandidateTerminal(
+    url: string,
+    candidateId: string,
+    reason: CoverageTerminalReason,
+    detail?: string,
+  ): void {
     const candidate = this.pages.get(url)?.candidates.get(candidateId);
-    if (!candidate || !candidate.allowed || candidate.exercised) return;
+    if (!candidate || candidate.exercised) return;
     candidate.terminalReason = reason;
+    candidate.terminalDetail = detail;
   }
 
-  markRemainingEligibleTerminal(reason: CoverageTerminalReason, url?: string): void {
+  markRemainingEligibleTerminal(reason: CoverageTerminalReason, url?: string, detail?: string): void {
     const pages = url ? [this.pages.get(url)].filter((page): page is PageState => Boolean(page)) : [...this.pages.values()];
     for (const page of pages) {
       for (const candidate of page.candidates.values()) {
-        if (candidate.allowed && !candidate.exercised) candidate.terminalReason = reason;
+        if (candidate.allowed && !candidate.exercised && candidateEligible(candidate)) {
+          candidate.terminalReason = reason;
+          candidate.terminalDetail = detail;
+        }
       }
     }
   }
@@ -112,48 +145,54 @@ export class CoverageGraph {
     const pages = [...this.pages.values()];
     const visitedPages = pages.filter((page) => page.visited).length;
     const pageCoverageRatio = pages.length === 0 ? 0 : visitedPages / pages.length;
+    const allCandidates = pages.flatMap((page) => [...page.candidates.values()].map((candidate) => ({ page, candidate })));
+    const allowedCandidates = allCandidates.filter(({ candidate }) => candidate.allowed);
+    const rawExercised = allowedCandidates.filter(({ candidate }) => candidate.exercised).length;
+    const rawCoverageRatio = allowedCandidates.length === 0 ? (visitedPages > 0 ? 1 : 0) : rawExercised / allowedCandidates.length;
 
-    let eligible = 0;
-    let exercised = 0;
+    const eligibleCandidates = allCandidates.filter(({ candidate }) => candidate.exercised || candidateEligible(candidate));
+    const exercisedEligible = eligibleCandidates.filter(({ candidate }) => candidate.exercised).length;
+    const eligibleCoverageRatio = eligibleCandidates.length === 0 ? (visitedPages > 0 ? 1 : 0) : exercisedEligible / eligibleCandidates.length;
+
     let explainedEligibleGaps = 0;
     let unexplainedEligibleGaps = 0;
     const terminalGaps: CoverageTerminalGap[] = [];
+    const gapReasonCounts: Partial<Record<CoverageTerminalReason, number>> = {};
 
-    for (const page of pages) {
-      for (const candidate of page.candidates.values()) {
-        if (!candidate.allowed) continue;
-        eligible += 1;
-        if (candidate.exercised) {
-          exercised += 1;
-          continue;
-        }
-        if (candidate.terminalReason) {
-          explainedEligibleGaps += 1;
-          terminalGaps.push({
-            scope: 'interaction',
-            url: page.url,
-            candidateId: candidate.id,
-            label: candidate.label,
-            reason: candidate.terminalReason,
-            explained: true,
-          });
-        } else {
-          unexplainedEligibleGaps += 1;
-        }
+    for (const { page, candidate } of allCandidates) {
+      if (candidate.exercised) continue;
+      const eligible = candidateEligible(candidate);
+      if (candidate.terminalReason) {
+        gapReasonCounts[candidate.terminalReason] = (gapReasonCounts[candidate.terminalReason] ?? 0) + 1;
+        terminalGaps.push({
+          scope: 'interaction',
+          url: page.url,
+          candidateId: candidate.id,
+          label: candidate.label,
+          reason: candidate.terminalReason,
+          ...(candidate.terminalDetail ? { detail: candidate.terminalDetail } : {}),
+          eligible,
+          explained: true,
+        });
+        if (eligible) explainedEligibleGaps += 1;
+      } else if (eligible) {
+        unexplainedEligibleGaps += 1;
       }
     }
 
-    const interactionCoverageRatio = eligible === 0 ? (visitedPages > 0 ? 1 : 0) : exercised / eligible;
-    const score = Math.round((pageCoverageRatio * 0.55 + interactionCoverageRatio * 0.45) * 100);
+    // Preserve Beta.9 score semantics and expose the Beta.10 eligible percentage
+    // additively. A caller cannot inflate the legacy score merely by marking a
+    // candidate ineligible.
+    const score = Math.round((pageCoverageRatio * 0.55 + rawCoverageRatio * 0.45) * 100);
 
     const gaps: string[] = [];
     for (const page of pages) {
       if (!page.visited) gaps.push(`Unvisited page: ${page.url}`);
       for (const candidate of page.candidates.values()) {
-        if (!candidate.allowed || candidate.exercised) continue;
+        if (candidate.exercised) continue;
         if (candidate.terminalReason) {
-          gaps.push(`Unexercised ${candidate.label}: ${page.url} (explained: ${candidate.terminalReason})`);
-        } else {
+          gaps.push(`${candidateEligible(candidate) ? 'Eligible' : 'Ineligible'} interaction ${candidate.label}: ${page.url} (${candidate.terminalReason}${candidate.terminalDetail ? `: ${candidate.terminalDetail}` : ''})`);
+        } else if (candidateEligible(candidate)) {
           gaps.push(`Unexplained eligible interaction ${candidate.label}: ${page.url}`);
         }
       }
@@ -162,26 +201,31 @@ export class CoverageGraph {
     return {
       score,
       pageCoverage: Math.round(pageCoverageRatio * 100),
-      interactionCoverage: Math.round(interactionCoverageRatio * 100),
-      eligibleInteractions: eligible,
-      exercisedEligibleInteractions: exercised,
+      interactionCoverage: Math.round(rawCoverageRatio * 100),
+      rawInteractionCoverage: Math.round(rawCoverageRatio * 100),
+      eligibleInteractionCoverage: Math.round(eligibleCoverageRatio * 100),
+      discoveredInteractions: allCandidates.length,
+      allowedInteractions: allowedCandidates.length,
+      eligibleInteractions: eligibleCandidates.length,
+      exercisedEligibleInteractions: exercisedEligible,
       explainedEligibleGaps,
       unexplainedEligibleGaps,
+      gapReasonCounts,
       pages: pages
         .map((page) => {
           const candidates = [...page.candidates.values()];
-          const eligibleCandidates = candidates.filter((candidate) => candidate.allowed);
+          const eligibleOnPage = candidates.filter((candidate) => candidate.exercised || candidateEligible(candidate));
           return {
             url: page.url,
             depth: page.depth,
             visited: page.visited,
             visits: page.visits,
             discoveredCandidates: candidates.length,
-            actionableCandidates: eligibleCandidates.length,
-            eligibleCandidates: eligibleCandidates.length,
-            exercisedCandidates: eligibleCandidates.filter((candidate) => candidate.exercised).length,
-            terminalEligibleCandidates: eligibleCandidates.filter((candidate) => !candidate.exercised && Boolean(candidate.terminalReason)).length,
-            unexplainedEligibleCandidates: eligibleCandidates.filter((candidate) => !candidate.exercised && !candidate.terminalReason).length,
+            actionableCandidates: candidates.filter((candidate) => candidate.allowed).length,
+            eligibleCandidates: eligibleOnPage.length,
+            exercisedCandidates: eligibleOnPage.filter((candidate) => candidate.exercised).length,
+            terminalEligibleCandidates: eligibleOnPage.filter((candidate) => !candidate.exercised && Boolean(candidate.terminalReason)).length,
+            unexplainedEligibleCandidates: eligibleOnPage.filter((candidate) => !candidate.exercised && !candidate.terminalReason).length,
             blockedCandidates: candidates.filter((candidate) => !candidate.allowed).length,
             errors: page.errors,
           };
