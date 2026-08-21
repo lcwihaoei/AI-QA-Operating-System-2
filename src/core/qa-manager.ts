@@ -21,6 +21,7 @@ import { resolveVisualViewports, VisualAgent } from '../agents/visual-agent.js';
 import { ControlPlaneStore } from '../control/control-plane.js';
 import { CausalCorrelator } from '../correlation/causal-correlator.js';
 import { EvidenceStore } from '../evidence/evidence-store.js';
+import { clusterFindings } from '../findings/finding-clusterer.js';
 import { applyFindingTruth } from '../findings/finding-truth-pipeline.js';
 import { GitHubQaPlanner } from '../github/github-qa-planner.js';
 import { CoverageGraph } from '../planning/coverage-graph.js';
@@ -155,6 +156,7 @@ export class QaManager {
     const reproduced = await new ReproductionAgent(exploration.storageState).run(rawEvents);
     const events = applyFindingTruth(reproduced.events);
     const findings = findingsFromEvents(events);
+    const findingClusters = clusterFindings(findings);
 
     let ux = emptyUxSummary(options.uxIntelligence !== false);
     let uxLearning: UxLearningSummary = { enabled: options.uxIntelligence !== false, memoryExisted: false, status: 'untracked', memoryUpdated: false };
@@ -208,7 +210,7 @@ export class QaManager {
     const controlPlane: ControlPlaneSummary = { enabled: Boolean(options.controlPlanePath), statePath: options.controlPlanePath, runRecorded: false };
     const result: QaRunResult = {
       runId, startedAt, finishedAt: new Date().toISOString(), visitedUrls: exploration.visitedUrls, actions: exploration.actions,
-      events, findings, coverage: coverageGraph.snapshot(), visualBaseline, api: api.summary, correlation: correlation.summary,
+      events, findings, findingClusters, coverage: coverageGraph.snapshot(), visualBaseline, api: api.summary, correlation: correlation.summary,
       semanticState, device: device.summary, reproduction: reproduced.summary, githubQa, controlPlane, ux, uxLearning,
       report: emptyReportSummary(options.evidenceReport !== false), outputDir: evidence.runDir,
     };
