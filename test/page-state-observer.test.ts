@@ -10,10 +10,10 @@ const base = {
 };
 
 describe('State Observer visibility semantics', () => {
-  it('recognizes an offscreen controlled region as intentionally hidden only when its owner is collapsed', () => {
+  it('recognizes an offscreen controlled descendant as intentionally hidden when its owner is collapsed', () => {
     const observation = observePageVisibility({
       ...base,
-      rect: { x: -160, y: 80, width: 240, height: 715 },
+      rect: { x: -160, y: 80, width: 64, height: 40 },
       controlledBy: 'button[aria-controls="appMenubar"]',
       ownerExpanded: false,
       transformed: true,
