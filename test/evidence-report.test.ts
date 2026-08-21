@@ -125,12 +125,64 @@ describe('beta7 evidence report', () => {
     expect(html).not.toContain('10000%');
     expect(html).not.toContain('4000%');
     expect(data).toContain('"status": "new"');
+    expect(data).toContain('"classification": "potential-product-defect"');
     expect(data).toContain('"pageCoverage": 100');
     expect(data).toContain('"interactionCoverage": 40');
     expect(data).not.toContain(runDir);
     expect(markdown).toContain('PASS_WITH_ISSUES');
     expect(markdown).toContain('- Page coverage: 100%');
     expect(markdown).toContain('- Interaction coverage: 40%');
+    expect(markdown).toContain('[potential-product-defect]');
     expect(markdown).toContain('Inspect the component width/height');
+  });
+
+  it('does not clamp an entirely offscreen element into a misleading screenshot marker', async () => {
+    const { runDir, screenshot } = await fixture();
+    const qa = result(runDir, screenshot);
+    const message = 'Interactive element is unreachable or clipped by the viewport: a.navbar-brand-text "LeeEng" [viewport=desktop 1440x1000]';
+    qa.events = [{
+      timestamp: '2026-08-20T00:00:05.000Z',
+      kind: 'ui',
+      url: 'https://example.com/settings',
+      message,
+      details: {
+        visual: true,
+        visualKind: 'interactive-offscreen',
+        viewport: 'desktop',
+        viewportWidth: 1440,
+        viewportHeight: 1000,
+        screenshot,
+        element: 'a.navbar-brand-text "LeeEng"',
+        rect: { x: -140, y: 25, width: 64, height: 29 },
+      },
+    }];
+    qa.findings = [{
+      id: 'BUG-0002', kind: 'ui', severity: 'medium', title: 'Interactive control outside viewport',
+      url: 'https://example.com/settings', message, reproduction: ['Open settings'], evidence: [screenshot], fingerprint: 'offscreen-1',
+    }];
+
+    const summary = await generateEvidenceReport({ runDir, result: qa, uxOpportunities: [] });
+    const html = await readFile(summary.htmlPath!, 'utf8');
+    const parsed = JSON.parse(await readFile(summary.dataPath!, 'utf8')) as { findings: Array<Record<string, unknown>> };
+    const finding = parsed.findings[0]!;
+
+    expect(finding.classification).toBe('potential-product-defect');
+    expect(finding.confidence).toBe(0.65);
+    expect(finding.annotationStatus).toBe('unverified');
+    expect(String(finding.annotationReason)).toContain('entirely outside the screenshot viewport');
+    expect(html).toContain('Annotation unverified');
+    expect(html).not.toContain('<span>BUG-0002</span>');
+  });
+
+  it('records an explicit reason when a visual finding lacks screenshot evidence', async () => {
+    const { runDir, screenshot } = await fixture();
+    const qa = result(runDir, screenshot);
+    qa.events[0]!.details = { ...qa.events[0]!.details, screenshot: undefined };
+    qa.findings[0]!.evidence = [];
+
+    const summary = await generateEvidenceReport({ runDir, result: qa, uxOpportunities: [] });
+    const parsed = JSON.parse(await readFile(summary.dataPath!, 'utf8')) as { findings: Array<Record<string, unknown>> };
+    expect(parsed.findings[0]?.screenshot).toBeUndefined();
+    expect(parsed.findings[0]?.screenshotReason).toBe('Visual finding has no screenshot evidence available within this QA run.');
   });
 });
