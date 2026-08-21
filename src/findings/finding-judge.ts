@@ -40,11 +40,24 @@ export function judgeFinding(input: FindingJudgementInput): FindingJudgement {
     };
   }
 
-  if (input.reproduction === 'confirmed' && input.annotation !== 'rejected') {
+  if (input.reproduction === 'confirmed' && input.annotation !== 'rejected' && input.visibility === 'visible') {
     return {
       verdict: 'confirmed-product-defect',
       confidenceCeiling: input.annotation === 'confirmed' ? 0.99 : 0.9,
-      reasons: ['independent reproduction confirmed the observed product behavior', `detector=${input.detector}`],
+      reasons: ['independent reproduction confirmed the observed product behavior in an explicitly visible state', `detector=${input.detector}`],
+    };
+  }
+
+  if (input.reproduction === 'confirmed') {
+    return {
+      verdict: 'potential-product-defect',
+      confidenceCeiling: input.annotation === 'rejected' ? 0.6 : 0.78,
+      reasons: [
+        'independent reproduction confirmed the detector signal but product-defect intent remains unproven',
+        `visibility=${input.visibility}`,
+        `annotation=${input.annotation}`,
+        `detector=${input.detector}`,
+      ],
     };
   }
 
