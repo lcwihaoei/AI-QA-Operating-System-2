@@ -98,6 +98,7 @@ export class QaPlanner {
 
       try {
         const recommendations = await this.model.recommend(context);
+        const metadata = this.model.getLastExecutionMetadata?.();
         const byId = new Map(recommendations.map((recommendation) => [recommendation.candidateId, recommendation]));
         for (const plan of plans) {
           if (!plan.decision.allowed) continue;
@@ -112,22 +113,26 @@ export class QaPlanner {
             };
           }
         }
+        const repaired = metadata?.repairAttempted === true;
         modelStatus = {
           configured: true,
           attempted: true,
           used: true,
-          repairAttempted: false,
+          repairAttempted: repaired,
           fallbackUsed: false,
-          outcome: 'used',
+          outcome: repaired ? 'repaired-and-used' : 'used',
+          provider: metadata?.provider,
         };
       } catch (error: unknown) {
+        const metadata = this.model.getLastExecutionMetadata?.();
         modelStatus = {
           configured: true,
           attempted: true,
           used: false,
-          repairAttempted: false,
+          repairAttempted: metadata?.repairAttempted === true,
           fallbackUsed: true,
           outcome: 'fallback',
+          provider: metadata?.provider,
           error: String(error),
         };
       }
