@@ -5,6 +5,7 @@ import type { ExplorationCandidate, QaEvent, QaRunOptions } from '../core/types.
 import { clickabilityPreflight } from '../planning/clickability-preflight.js';
 import { CoverageGraph } from '../planning/coverage-graph.js';
 import { selectExplorationPlans } from '../planning/exploration-selection.js';
+import { captureInteractionStateFingerprint } from '../planning/interaction-state-fingerprint.js';
 import { PageStateAnalyzer } from '../planning/page-state-analyzer.js';
 import { QaPlanner } from '../planning/qa-planner.js';
 import { SyntheticInputStrategy } from '../planning/synthetic-input-strategy.js';
@@ -43,6 +44,7 @@ export class BrowserExplorer {
     const events: QaEvent[] = [];
     const visited = new Set<string>();
     const queuedUrls = new Set<string>();
+    const attemptedStateActions = new Set<string>();
     const uxSnapshots = new Map<string, UxPageSnapshot>();
     const startUrl = this.normalizeUrl(options.url);
     const origin = new URL(startUrl).origin;
@@ -129,21 +131,36 @@ export class BrowserExplorer {
           shouldReplan = false;
 
           const candidates = await this.collectCandidates(page);
+          const interactionStateId = await this.interactionStateId(page, actualUrl);
           const pageState = await this.pageStateAnalyzer.analyze(page);
-          const ranking = await this.planner.rank(actualUrl, item.depth, candidates, options.riskMode, pageState);
+          const ranking = await this.planner.rank(actualUrl, item.depth, candidates, options.riskMode, pageState, interactionStateId);
           const plans = ranking.plans;
           const allowedPlans = plans.filter((plan) => plan.decision.allowed);
           const blockedPlans = plans.filter((plan) => !plan.decision.allowed);
+          const duplicateStatePlans = plans.filter((plan) =>
+            plan.candidate.kind !== 'link'
+            && !this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)
+            && attemptedStateActions.has(stateActionKey(actualUrl, interactionStateId, plan.candidate.id)));
           const selectablePlans = plans.filter((plan) =>
-            plan.candidate.kind === 'link' || !this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id));
+            plan.candidate.kind === 'link'
+            || (!this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)
+              && !attemptedStateActions.has(stateActionKey(actualUrl, interactionStateId, plan.candidate.id))));
           const selected = selectExplorationPlans(selectablePlans, options.maxCandidatesPerPage);
+
+          for (const plan of duplicateStatePlans) {
+            if (!this.coverage.candidateTerminalReason(actualUrl, plan.candidate.id)) {
+              this.coverage.markCandidateTerminal(actualUrl, plan.candidate.id, 'duplicate-state-action', 'same candidate was already attempted in the same structural page state');
+            }
+          }
 
           events.push(this.event('planner', actualUrl, `Planner ranked ${plans.length} candidates`, {
             interactionRound,
+            interactionStateId,
             allowed: allowedPlans.length,
             blocked: blockedPlans.length,
             selectedNavigation: selected.navigation.length,
             selectedInteractions: selected.interactions.length,
+            duplicateStateActionsSkipped: duplicateStatePlans.length,
             previouslyExercisedInteractions: plans.filter((plan) =>
               plan.candidate.kind !== 'link' && this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)).length,
             modelStatus: ranking.modelStatus,
@@ -204,19 +221,25 @@ export class BrowserExplorer {
           for (const plan of selected.interactions) {
             if (actions >= options.maxActions) break;
             const candidate = plan.candidate;
+            attemptedStateActions.add(stateActionKey(actualUrl, interactionStateId, candidate.id));
 
             if (candidate.kind === 'field') {
               const exercised = await this.probeField(page, candidate, events, actions + 1);
               if (!exercised) continue;
               actions += 1;
               this.coverage.markCandidateExercised(actualUrl, candidate.id);
-              this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
               await this.captureInteractionState(page, candidate, events, actions);
+              const nextStateId = await this.interactionStateId(page, actualUrl);
+              const materialStateChanged = nextStateId !== interactionStateId;
+              if (materialStateChanged) this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
               shouldReplan = true;
-              events.push(this.event('planner', page.url(), 'Invalidated remaining interaction plans after field state transition', {
+              events.push(this.event('planner', page.url(), 'Refreshed interaction frontier after field action', {
                 stateReplan: true,
+                materialStateChanged,
                 candidateId: candidate.id,
                 interactionRound,
+                previousInteractionStateId: interactionStateId,
+                nextInteractionStateId: nextStateId,
               }));
               break;
             }
@@ -226,7 +249,6 @@ export class BrowserExplorer {
               if (!outcome.exercised) continue;
               actions += 1;
               this.coverage.markCandidateExercised(actualUrl, candidate.id);
-              this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
               await this.captureInteractionState(page, candidate, events, actions);
 
               if (outcome.destination) {
@@ -242,12 +264,18 @@ export class BrowserExplorer {
                 await page.waitForTimeout(120);
               }
 
+              const nextStateId = await this.interactionStateId(page, actualUrl);
+              const materialStateChanged = nextStateId !== interactionStateId;
+              if (materialStateChanged) this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
               shouldReplan = true;
-              events.push(this.event('planner', page.url(), 'Invalidated remaining interaction plans after button state transition', {
+              events.push(this.event('planner', page.url(), 'Refreshed interaction frontier after button action', {
                 stateReplan: true,
+                materialStateChanged,
                 candidateId: candidate.id,
                 interactionRound,
                 navigated: Boolean(outcome.destination),
+                previousInteractionStateId: interactionStateId,
+                nextInteractionStateId: nextStateId,
               }));
               break;
             }
@@ -284,6 +312,10 @@ export class BrowserExplorer {
     }
 
     return { events, visitedUrls: [...visited], actions, storageState, uxSnapshots: [...uxSnapshots.values()] };
+  }
+
+  private async interactionStateId(page: Page, url: string): Promise<string> {
+    return captureInteractionStateFingerprint(page).catch(() => `state-unavailable:${safePath(url)}`);
   }
 
   private markSiblingPlansInvalidated(url: string, plans: Array<{ candidate: ExplorationCandidate }>, exercisedId: string): void {
@@ -635,6 +667,18 @@ export class BrowserExplorer {
 
   private event(kind: QaEvent['kind'], url: string, message: string, details?: Record<string, unknown>): QaEvent {
     return { timestamp: new Date().toISOString(), kind, url, message, details };
+  }
+}
+
+function stateActionKey(url: string, stateId: string, candidateId: string): string {
+  return `${safePath(url)}|${stateId}|${candidateId}`;
+}
+
+function safePath(url: string): string {
+  try {
+    return new URL(url).pathname || '/';
+  } catch {
+    return url.split(/[?#]/, 1)[0] || '/';
   }
 }
 
