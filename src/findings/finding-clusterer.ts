@@ -1,28 +1,13 @@
 import { createHash } from 'node:crypto';
-import type { Finding, Severity } from '../core/types.js';
+import {
+  assertFindingClusterSummary,
+  type ClusterSeverity,
+  type FindingCluster,
+  type FindingClusterSummary,
+} from '../contracts/finding-cluster-contracts.js';
+import type { Finding } from '../core/types.js';
 
-export interface FindingCluster {
-  id: string;
-  key: string;
-  title: string;
-  verdict: string;
-  severity: Severity;
-  representativeFindingId: string;
-  memberFindingIds: string[];
-  memberFingerprints: string[];
-  routes: string[];
-  evidence: string[];
-  duplicateCount: number;
-}
-
-export interface FindingClusterSummary {
-  rawFindings: number;
-  clusters: number;
-  duplicateFindings: number;
-  items: FindingCluster[];
-}
-
-const severityRank: Record<Severity, number> = {
+const severityRank: Record<ClusterSeverity, number> = {
   critical: 5,
   high: 4,
   medium: 3,
@@ -30,9 +15,9 @@ const severityRank: Record<Severity, number> = {
   info: 1,
 };
 
-function maxSeverity(findings: Finding[]): Severity {
-  return findings.reduce((best, finding) =>
-    severityRank[finding.severity] > severityRank[best] ? finding.severity : best, 'info' as Severity);
+function maxSeverity(findings: Finding[]): ClusterSeverity {
+  return findings.reduce<ClusterSeverity>((best, finding) =>
+    severityRank[finding.severity] > severityRank[best] ? finding.severity : best, 'info');
 }
 
 function pathname(url: string): string {
@@ -104,10 +89,14 @@ export function clusterFindings(findings: Finding[]): FindingClusterSummary {
     || b.memberFindingIds.length - a.memberFindingIds.length
     || a.key.localeCompare(b.key));
 
-  return {
+  const summary: FindingClusterSummary = {
     rawFindings: findings.length,
     clusters: items.length,
     duplicateFindings: Math.max(0, findings.length - items.length),
     items,
   };
+  assertFindingClusterSummary(summary);
+  return summary;
 }
+
+export type { FindingCluster, FindingClusterSummary } from '../contracts/finding-cluster-contracts.js';
