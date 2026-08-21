@@ -12,6 +12,7 @@ type CandidateState = {
   risk: CandidateRisk;
   allowed: boolean;
   exercised: boolean;
+  observedStateId?: string;
   terminalReason?: CoverageTerminalReason;
   terminalDetail?: string;
 };
@@ -33,6 +34,13 @@ const INELIGIBLE_TERMINAL_REASONS = new Set<CoverageTerminalReason>([
   'auth-gated',
   'unsupported-control',
   'navigation-duplicate',
+]);
+
+const REOPEN_ON_STATE_CHANGE = new Set<CoverageTerminalReason>([
+  'duplicate-state-action',
+  'stale-after-state-change',
+  'not-visible',
+  'pointer-intercepted',
 ]);
 
 function candidateEligible(candidate: CandidateState): boolean {
@@ -59,7 +67,13 @@ export class CoverageGraph {
     page.visits += 1;
   }
 
-  discoverCandidate(url: string, candidate: ExplorationCandidate, risk: CandidateRisk, allowed: boolean): void {
+  discoverCandidate(
+    url: string,
+    candidate: ExplorationCandidate,
+    risk: CandidateRisk,
+    allowed: boolean,
+    stateId?: string,
+  ): void {
     let page = this.pages.get(url);
     if (!page) {
       this.discoverPage(url, 0);
@@ -67,15 +81,19 @@ export class CoverageGraph {
     }
     const current = page.candidates.get(candidate.id);
     if (current) {
+      const stateChanged = stateId === undefined || current.observedStateId === undefined || current.observedStateId !== stateId;
       current.risk = risk;
       current.allowed = allowed;
       current.label = candidate.label || candidate.kind;
+      if (stateId !== undefined) current.observedStateId = stateId;
       if (current.exercised) return;
       if (!allowed) {
         current.terminalReason = 'blocked-by-risk-policy';
         current.terminalDetail = risk;
-      } else {
-        // Re-observation in a fresh active DOM state reopens the candidate.
+      } else if (current.terminalReason && stateChanged && REOPEN_ON_STATE_CHANGE.has(current.terminalReason)) {
+        // Only state-dependent/transient reasons reopen automatically. A repeated
+        // observation in the same structural state must not erase a meaningful
+        // pointer/stale terminal reason and artificially create an unexplained gap.
         current.terminalReason = undefined;
         current.terminalDetail = undefined;
       }
@@ -87,6 +105,7 @@ export class CoverageGraph {
       risk,
       allowed,
       exercised: false,
+      observedStateId: stateId,
       ...(!allowed ? { terminalReason: 'blocked-by-risk-policy' as const, terminalDetail: risk } : {}),
     });
   }
@@ -110,6 +129,10 @@ export class CoverageGraph {
     if (!candidate || candidate.exercised) return;
     candidate.terminalReason = reason;
     candidate.terminalDetail = detail;
+  }
+
+  candidateTerminalReason(url: string, candidateId: string): CoverageTerminalReason | undefined {
+    return this.pages.get(url)?.candidates.get(candidateId)?.terminalReason;
   }
 
   markRemainingEligibleTerminal(reason: CoverageTerminalReason, url?: string, detail?: string): void {
