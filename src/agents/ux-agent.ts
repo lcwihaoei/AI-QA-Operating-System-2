@@ -1,4 +1,5 @@
 import { chromium, type Browser, type BrowserContextOptions } from '@playwright/test';
+import { assertModelExecutionStatus, type ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { BrowserStorageState } from '../core/browser-state.js';
 import type { QaEvent } from '../core/types.js';
 import { analyzeUx, buildUxFlowSnapshot, scoreUx } from '../ux/ux-heuristics.js';
@@ -74,16 +75,56 @@ export class UxAgent {
     const requestedPaths = new Set(unique.map((target) => uxPathInfo(target).urlPath));
     const snapshots = [...snapshotsByPath.values()].filter((snapshot) => requestedPaths.has(snapshot.urlPath));
     let opportunities = analyzeUx(snapshots, flow);
-    let reasonerUsed = false;
-    if (this.reasoner && snapshots.length > 0) {
+    let reasonerStatus: ModelExecutionStatus;
+    if (!this.reasoner) {
+      reasonerStatus = {
+        configured: false,
+        attempted: false,
+        used: false,
+        repairAttempted: false,
+        fallbackUsed: false,
+        outcome: 'not-configured',
+      };
+    } else if (snapshots.length === 0) {
+      reasonerStatus = {
+        configured: true,
+        attempted: false,
+        used: false,
+        repairAttempted: false,
+        fallbackUsed: false,
+        outcome: 'skipped',
+        skipReason: 'no successfully captured UX page snapshots were available',
+      };
+    } else {
       try {
         const proposed = await this.reasoner.propose({ pages: snapshots, flow, deterministic: opportunities });
         opportunities = mergeReasoner(opportunities, proposed);
-        reasonerUsed = true;
-      } catch {
-        reasonerUsed = false;
+        const metadata = this.reasoner.getLastExecutionMetadata?.();
+        const repaired = metadata?.repairAttempted === true;
+        reasonerStatus = {
+          configured: true,
+          attempted: true,
+          used: true,
+          repairAttempted: repaired,
+          fallbackUsed: false,
+          outcome: repaired ? 'repaired-and-used' : 'used',
+          provider: metadata?.provider,
+        };
+      } catch (error: unknown) {
+        const metadata = this.reasoner.getLastExecutionMetadata?.();
+        reasonerStatus = {
+          configured: true,
+          attempted: true,
+          used: false,
+          repairAttempted: metadata?.repairAttempted === true,
+          fallbackUsed: true,
+          outcome: 'fallback',
+          provider: metadata?.provider,
+          error: String(error),
+        };
       }
     }
+    assertModelExecutionStatus(reasonerStatus);
 
     const pagesAttempted = unique.length;
     const pagesAnalyzed = snapshots.length;
@@ -106,7 +147,8 @@ export class UxAgent {
       highImpact: opportunities.filter((item) => item.impact === 'high').length,
       mediumImpact: opportunities.filter((item) => item.impact === 'medium').length,
       lowImpact: opportunities.filter((item) => item.impact === 'low').length,
-      reasonerUsed,
+      reasonerStatus,
+      reasonerUsed: reasonerStatus.used,
       ...(toolingError ? { toolingError } : {}),
     };
     return { summary, opportunities, snapshots, flow };
