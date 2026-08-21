@@ -58,7 +58,7 @@ function result(runDir: string, screenshot: string): QaRunResult {
       evidence: [screenshot],
       fingerprint: 'abc123',
     }],
-    coverage: { score: 73, pageCoverage: 1, interactionCoverage: 0.4, pages: [], gaps: [] },
+    coverage: { score: 73, pageCoverage: 100, interactionCoverage: 40, pages: [], gaps: [] },
     visualBaseline: { enabled: true, existed: true, newSignals: 1, persistentSignals: 2, resolvedSignals: 3, updated: false },
     api: { enabled: false, mode: 'off', operationsDiscovered: 0, operationsTested: 0, operationsSkipped: 0 },
     correlation: { chains: 0, highConfidence: 0, apiMatched: 0, browserNetworkFailures: 0 },
@@ -113,9 +113,17 @@ describe('beta7 evidence report', () => {
     expect(html).toContain('Add visible labels or aria-label.');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('<strong>100%</strong><span>Page coverage</span>');
+    expect(html).toContain('<strong>40%</strong><span>Interaction coverage</span>');
+    expect(html).not.toContain('10000%');
+    expect(html).not.toContain('4000%');
     expect(data).toContain('"status": "new"');
+    expect(data).toContain('"pageCoverage": 100');
+    expect(data).toContain('"interactionCoverage": 40');
     expect(data).not.toContain(runDir);
     expect(markdown).toContain('PASS_WITH_ISSUES');
+    expect(markdown).toContain('- Page coverage: 100%');
+    expect(markdown).toContain('- Interaction coverage: 40%');
     expect(markdown).toContain('Inspect the component width/height');
   });
 });
