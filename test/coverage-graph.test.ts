@@ -100,4 +100,31 @@ describe('CoverageGraph', () => {
     expect(snapshot.eligibleInteractions).toBe(1);
     expect(snapshot.unexplainedEligibleGaps).toBe(1);
   });
+
+  it('does not erase a transient terminal reason in the same structural state and reopens it only when state changes', () => {
+    const graph = new CoverageGraph();
+    const button: ExplorationCandidate = { ...link, id: 'button:covered', kind: 'button', label: 'Covered', href: undefined, tagName: 'button' };
+    graph.visitPage('https://example.com/', 0);
+    graph.discoverCandidate('https://example.com/', button, 'low', true, 'state-closed');
+    graph.markCandidateTerminal('https://example.com/', button.id, 'pointer-intercepted', 'overlay covers target');
+
+    graph.discoverCandidate('https://example.com/', button, 'low', true, 'state-closed');
+    expect(graph.candidateTerminalReason('https://example.com/', button.id)).toBe('pointer-intercepted');
+    expect(graph.snapshot().explainedEligibleGaps).toBe(1);
+
+    graph.discoverCandidate('https://example.com/', button, 'low', true, 'state-open');
+    expect(graph.candidateTerminalReason('https://example.com/', button.id)).toBeUndefined();
+    expect(graph.snapshot().unexplainedEligibleGaps).toBe(1);
+  });
+
+  it('keeps non-transient execution failures terminal even after a state change', () => {
+    const graph = new CoverageGraph();
+    const button: ExplorationCandidate = { ...link, id: 'button:failing', kind: 'button', label: 'Failing', href: undefined, tagName: 'button' };
+    graph.visitPage('https://example.com/', 0);
+    graph.discoverCandidate('https://example.com/', button, 'low', true, 'state-a');
+    graph.markCandidateTerminal('https://example.com/', button.id, 'execution-error', 'unexpected automation failure');
+    graph.discoverCandidate('https://example.com/', button, 'low', true, 'state-b');
+    expect(graph.candidateTerminalReason('https://example.com/', button.id)).toBe('execution-error');
+    expect(graph.snapshot().explainedEligibleGaps).toBe(1);
+  });
 });
