@@ -24,13 +24,28 @@ async function fixture(): Promise<string> {
     response.end(`<!doctype html><html><head><title>State replan fixture</title></head><body>
       <main id="root">
         <h1>State replan fixture</h1>
-        <button id="open-panel" type="button" onclick="
+        <button id="open-panel" type="button">Open panel</button>
+      </main>
+      <script>
+        document.getElementById('open-panel').addEventListener('click', () => {
           const root = document.getElementById('root');
           document.getElementById('open-panel').remove();
-          root.insertAdjacentHTML('afterbegin', '<button id=&quot;panel-action&quot; type=&quot;button&quot; onclick=&quot;document.body.dataset.panelAction=\'done\'&quot;>Panel action</button>');
-          root.insertAdjacentHTML('beforeend', '<button id=&quot;late-action&quot; type=&quot;button&quot; onclick=&quot;document.body.dataset.lateAction=\'done\'&quot;>Late action</button>');
-        ">Open panel</button>
-      </main>
+
+          const panelAction = document.createElement('button');
+          panelAction.id = 'panel-action';
+          panelAction.type = 'button';
+          panelAction.textContent = 'Panel action';
+          panelAction.addEventListener('click', () => { document.body.dataset.panelAction = 'done'; });
+          root.prepend(panelAction);
+
+          const lateAction = document.createElement('button');
+          lateAction.id = 'late-action';
+          lateAction.type = 'button';
+          lateAction.textContent = 'Late action';
+          lateAction.addEventListener('click', () => { document.body.dataset.lateAction = 'done'; });
+          root.append(lateAction);
+        });
+      </script>
     </body></html>`);
   });
   servers.push(server);
