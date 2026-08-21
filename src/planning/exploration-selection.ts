@@ -5,6 +5,13 @@ export interface ExplorationSelection {
   interactions: PlannedCandidate[];
 }
 
+export interface ExplorationSelectionBudget {
+  /** Remaining global browser-action budget after the current navigation/action. */
+  remainingActions?: number;
+  /** Number of distinct route families not yet represented by visited/queued coverage. */
+  routeBreadthPressure?: number;
+}
+
 function routeFamily(plan: PlannedCandidate): string {
   const href = plan.candidate.href;
   if (!href) return `candidate:${plan.candidate.id}`;
@@ -23,9 +30,6 @@ function balancedNavigation(links: PlannedCandidate[], quota: number): PlannedCa
   const usedIds = new Set<string>();
   const seenFamilies = new Set<string>();
 
-  // First pass: take the highest-ranked representative of each top-level route
-  // family. This prevents /settings/* from consuming the whole page budget while
-  // /learning, /vocabulary or /practice remain untouched.
   for (const plan of links) {
     if (selected.length >= quota) break;
     const family = routeFamily(plan);
@@ -35,7 +39,6 @@ function balancedNavigation(links: PlannedCandidate[], quota: number): PlannedCa
     seenFamilies.add(family);
   }
 
-  // Second pass: fill unused capacity by the planner's original ranking.
   for (const plan of links) {
     if (selected.length >= quota) break;
     if (usedIds.has(plan.candidate.id)) continue;
@@ -68,33 +71,53 @@ function balancedInteractions(interactions: PlannedCandidate[], quota: number): 
   return selected;
 }
 
+function boundedSelectionLimit(limit: number, budget?: ExplorationSelectionBudget): number {
+  const requested = Math.max(1, Math.min(Math.floor(limit), 100));
+  if (budget?.remainingActions === undefined) return requested;
+  return Math.max(1, Math.min(requested, Math.max(1, Math.floor(budget.remainingActions))));
+}
+
+function distinctRouteFamilies(links: PlannedCandidate[]): number {
+  return new Set(links.map(routeFamily)).size;
+}
+
 /**
  * Keep route discovery and real interaction probing from starving each other.
  *
- * The planner may rank many candidates of one kind or route family above the
- * others. Taking a single top-N slice therefore turns a nominal BFS crawl into
- * a narrow route chain, or prevents buttons from ever being clicked. This
- * selector reserves capacity for both safe navigation and non-link
- * interactions, diversifies navigation by top-level route family, and reserves
- * a button slot when an allowed button exists.
+ * Beta.9 reserved at most three interactions per planning round. That was safe
+ * but made interaction-rich applications plateau at shallow coverage even when
+ * the global action budget had ample capacity. Beta.10 instead computes a
+ * bounded dynamic split. Navigation keeps enough slots to represent route
+ * families, while the remaining capacity may be used by safe interactions.
+ * The caller can further constrain the split with the remaining global action
+ * budget and route-breadth pressure. Deterministic risk policy remains
+ * authoritative because this function only sees already-allowed plans.
  */
-export function selectExplorationPlans(plans: PlannedCandidate[], limit: number): ExplorationSelection {
-  const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 100));
+export function selectExplorationPlans(
+  plans: PlannedCandidate[],
+  limit: number,
+  budget?: ExplorationSelectionBudget,
+): ExplorationSelection {
+  const boundedLimit = boundedSelectionLimit(limit, budget);
   const allowed = plans.filter((plan) => plan.decision.allowed);
   const links = allowed.filter((plan) => plan.candidate.kind === 'link' && Boolean(plan.candidate.href));
   const interactions = allowed.filter((plan) => plan.candidate.kind !== 'link');
 
   if (links.length === 0) return { navigation: [], interactions: balancedInteractions(interactions, boundedLimit) };
   if (interactions.length === 0) return { navigation: balancedNavigation(links, boundedLimit), interactions: [] };
-  if (boundedLimit === 1) {
-    return { navigation: balancedNavigation(links, 1), interactions: [] };
-  }
+  if (boundedLimit === 1) return { navigation: balancedNavigation(links, 1), interactions: [] };
 
-  const interactionQuota = Math.min(
-    interactions.length,
-    Math.max(1, Math.min(3, Math.floor(boundedLimit * 0.34))),
-  );
-  const navigationQuota = Math.min(links.length, Math.max(1, boundedLimit - interactionQuota));
+  const familyCount = distinctRouteFamilies(links);
+  const requestedBreadth = Math.max(1, Math.min(
+    familyCount,
+    budget?.routeBreadthPressure ?? familyCount,
+  ));
+  // Reserve no more than half the current slice for breadth when interactions
+  // are waiting. This guarantees at least one navigation slot while allowing
+  // interaction-rich pages to use substantially more than the old 3-slot cap.
+  const navigationFloor = Math.max(1, Math.min(requestedBreadth, Math.ceil(boundedLimit * 0.5)));
+  const navigationQuota = Math.min(links.length, navigationFloor);
+  const interactionQuota = Math.min(interactions.length, Math.max(1, boundedLimit - navigationQuota));
 
   let selectedInteractions = balancedInteractions(interactions, interactionQuota);
   let selectedNavigation = balancedNavigation(links, navigationQuota);
