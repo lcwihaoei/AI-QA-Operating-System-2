@@ -37,6 +37,27 @@ describe('Beta.10 canonical quality contracts', () => {
     })).toThrow(/preserve an error diagnostic/);
   });
 
+  it('requires a configured model skip to preserve why no attempt happened', () => {
+    expect(() => assertModelExecutionStatus({
+      configured: true,
+      attempted: false,
+      used: false,
+      repairAttempted: false,
+      fallbackUsed: false,
+      outcome: 'skipped',
+      skipReason: 'no eligible planner candidates',
+    })).not.toThrow();
+
+    expect(() => assertModelExecutionStatus({
+      configured: true,
+      attempted: false,
+      used: false,
+      repairAttempted: false,
+      fallbackUsed: false,
+      outcome: 'skipped',
+    })).toThrow(/explicit reason/);
+  });
+
   it('does not allow a detector signal to become a confirmed product defect without reproduction', () => {
     expect(() => assertEvidenceTruthAssessment({
       screenshot: 'available',
