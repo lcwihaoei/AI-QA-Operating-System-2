@@ -1,4 +1,4 @@
-import type { ModelExecutionStatus } from '../contracts/quality-contracts.js';
+import type { EvidenceTruthAssessment, ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { DeviceMode, DevicePlatform } from '../device/device-provider.js';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -226,6 +226,18 @@ export interface UxLearningSummary {
   toolingError?: string;
 }
 
+export interface ReproductionSummary {
+  enabled: boolean;
+  eligible: number;
+  attempted: number;
+  confirmed: number;
+  notReproduced: number;
+  blocked: number;
+  notRun: number;
+  maxAttempts: number;
+  toolingError?: string;
+}
+
 export interface QaReportSummary {
   enabled: boolean;
   htmlPath?: string;
@@ -255,6 +267,7 @@ export interface Finding {
   reproduction: string[];
   evidence: string[];
   fingerprint: string;
+  truth?: EvidenceTruthAssessment;
 }
 
 export interface QaRunResult {
@@ -271,6 +284,7 @@ export interface QaRunResult {
   correlation: CausalCorrelationSummary;
   semanticState: SemanticStateSummary;
   device: DeviceQaSummary;
+  reproduction?: ReproductionSummary;
   githubQa?: GitHubQaSummary;
   controlPlane?: ControlPlaneSummary;
   ux?: UxIntelligenceSummary;
