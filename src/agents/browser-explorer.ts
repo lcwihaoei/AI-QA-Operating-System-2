@@ -179,15 +179,25 @@ export class BrowserExplorer {
             const next = this.normalizeNavigableUrl(candidate.href, actualUrl);
             if (!next) continue;
             if (options.sameOriginOnly && new URL(next).origin !== origin) continue;
-            if (!visited.has(next) && !queuedUrls.has(next) && item.depth < options.maxDepth) {
-              this.coverage.discoverPage(next, item.depth + 1);
-              queued.push({
-                url: next,
-                depth: item.depth + 1,
-                source: { pageUrl: actualUrl, candidateId: candidate.id },
-              });
-              queuedUrls.add(next);
+            if (visited.has(next)) {
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'route-already-covered');
+              continue;
             }
+            if (queuedUrls.has(next)) {
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'route-already-queued');
+              continue;
+            }
+            if (item.depth >= options.maxDepth) {
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'navigation-depth-limit');
+              continue;
+            }
+            this.coverage.discoverPage(next, item.depth + 1);
+            queued.push({
+              url: next,
+              depth: item.depth + 1,
+              source: { pageUrl: actualUrl, candidateId: candidate.id },
+            });
+            queuedUrls.add(next);
           }
 
           // Execute at most one interaction from a DOM snapshot. Any successful
@@ -202,6 +212,7 @@ export class BrowserExplorer {
               if (!exercised) continue;
               actions += 1;
               this.coverage.markCandidateExercised(actualUrl, candidate.id);
+              this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
               await this.captureInteractionState(page, candidate, events, actions);
               shouldReplan = true;
               events.push(this.event('planner', page.url(), 'Invalidated remaining interaction plans after field state transition', {
@@ -217,6 +228,7 @@ export class BrowserExplorer {
               if (!outcome.exercised) continue;
               actions += 1;
               this.coverage.markCandidateExercised(actualUrl, candidate.id);
+              this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
               await this.captureInteractionState(page, candidate, events, actions);
 
               if (outcome.destination) {
@@ -245,6 +257,7 @@ export class BrowserExplorer {
         }
 
         if (shouldReplan && interactionRound >= maxInteractionRounds) {
+          this.coverage.markRemainingEligibleTerminal('interaction-round-budget-exhausted', actualUrl);
           events.push(this.event('planner', actualUrl, 'Stopped state replanning at the per-page interaction-round budget', {
             terminalGap: true,
             gapReason: 'interaction-round-budget-exhausted',
@@ -254,6 +267,16 @@ export class BrowserExplorer {
         }
       }
 
+      if (actions >= options.maxActions) {
+        this.coverage.markRemainingEligibleTerminal('action-budget-exhausted');
+        events.push(this.event('planner', explorationUrl(visited, startUrl), 'Stopped exploration at the global action budget', {
+          terminalGap: true,
+          gapReason: 'action-budget-exhausted',
+          actions,
+          maxActions: options.maxActions,
+        }));
+      }
+
       storageState = await context.storageState().catch(() => undefined);
       await context.close();
     } finally {
@@ -261,6 +284,13 @@ export class BrowserExplorer {
     }
 
     return { events, visitedUrls: [...visited], actions, storageState, uxSnapshots: [...uxSnapshots.values()] };
+  }
+
+  private markSiblingPlansInvalidated(url: string, plans: Array<{ candidate: ExplorationCandidate }>, exercisedId: string): void {
+    for (const plan of plans) {
+      if (plan.candidate.id === exercisedId) continue;
+      this.coverage.markCandidateTerminal(url, plan.candidate.id, 'state-invalidated');
+    }
   }
 
   private attachObservers(page: Page, events: QaEvent[]): void {
@@ -309,14 +339,23 @@ export class BrowserExplorer {
                 : undefined;
         const formAction = button?.form?.action || ('form' in formControl ? formControl.form?.action : undefined);
         const kind = tagName === 'a' ? 'link' as const : ['input', 'textarea', 'select'].includes(tagName) ? 'field' as const : 'button' as const;
+        let hrefIdentity: string | undefined;
+        if (href) {
+          try {
+            const parsed = new URL(href);
+            hrefIdentity = parsed.pathname;
+          } catch {
+            hrefIdentity = href.split(/[?#]/, 1)[0];
+          }
+        }
         const identity = node.id
           ? `id=${node.id}`
           : node.getAttribute('name')
             ? `name=${node.getAttribute('name')}`
             : node.getAttribute('aria-label')
               ? `aria=${node.getAttribute('aria-label')}`
-              : href
-                ? `href=${href}`
+              : hrefIdentity
+                ? `href=${hrefIdentity}`
                 : `label=${label || tagName}`;
         const stableBase = `${kind}:${tagName}:${identity.replace(/\s+/g, ' ').slice(0, 180)}`;
         const occurrence = occurrences.get(stableBase) ?? 0;
@@ -342,18 +381,24 @@ export class BrowserExplorer {
   private async probeField(page: Page, candidate: ExplorationCandidate, events: QaEvent[], actionNumber: number): Promise<boolean> {
     const locator = this.candidateLocator(page, candidate);
     if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-candidate');
       events.push(this.event('action', page.url(), `Skip stale/unavailable field candidate: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         staleCandidate: true,
+        terminalGap: true,
+        gapReason: 'stale-candidate',
       }));
       return false;
     }
 
     const strategy = this.inputStrategy.plan(candidate);
     if (strategy.action === 'skip') {
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'unsupported-field');
       events.push(this.event('action', page.url(), `Skip unsupported field: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         reason: strategy.reason,
+        terminalGap: true,
+        gapReason: 'unsupported-field',
       }));
       return false;
     }
@@ -400,9 +445,12 @@ export class BrowserExplorer {
   ): Promise<{ exercised: boolean; destination?: string }> {
     const locator = this.candidateLocator(page, candidate);
     if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-candidate');
       events.push(this.event('action', page.url(), `Skip stale/unavailable button candidate: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         staleCandidate: true,
+        terminalGap: true,
+        gapReason: 'stale-candidate',
       }));
       return { exercised: false };
     }
@@ -438,8 +486,12 @@ export class BrowserExplorer {
       if (node.tagName.toLowerCase() !== expected.tagName) return false;
       if (expected.name && node.getAttribute('name') !== expected.name) return false;
       if (expected.href && node instanceof HTMLAnchorElement && node.href !== expected.href) return false;
+      const formControl = node as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+      const associatedLabel = 'labels' in formControl
+        ? Array.from(formControl.labels ?? []).map((label) => label.innerText.trim()).filter(Boolean).join(' ')
+        : '';
       const currentLabel = (
-        node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('name') || node.getAttribute('title') || ''
+        associatedLabel || node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('name') || node.getAttribute('title') || ''
       ).trim().replace(/\s+/g, ' ').slice(0, 120);
       if (expected.label && currentLabel && currentLabel !== expected.label) return false;
       return true;
@@ -556,4 +608,8 @@ export class BrowserExplorer {
   private event(kind: QaEvent['kind'], url: string, message: string, details?: Record<string, unknown>): QaEvent {
     return { timestamp: new Date().toISOString(), kind, url, message, details };
   }
+}
+
+function explorationUrl(visited: Set<string>, fallback: string): string {
+  return [...visited].at(-1) ?? fallback;
 }
