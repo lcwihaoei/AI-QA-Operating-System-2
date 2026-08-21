@@ -1,3 +1,4 @@
+import { assertModelExecutionStatus, type ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { ExplorationCandidate, PlannedCandidate, RiskMode } from '../core/types.js';
 import { CoverageGraph } from './coverage-graph.js';
 import { HumanLikePolicy } from './human-like-policy.js';
@@ -55,9 +56,27 @@ export class QaPlanner {
       return { candidate, decision, score } satisfies PlannedCandidate;
     });
 
-    let modelError: string | undefined;
-    let modelUsed = false;
-    if (this.model && plans.length > 0) {
+    let modelStatus: ModelExecutionStatus;
+    if (!this.model) {
+      modelStatus = {
+        configured: false,
+        attempted: false,
+        used: false,
+        repairAttempted: false,
+        fallbackUsed: false,
+        outcome: 'not-configured',
+      };
+    } else if (plans.length === 0) {
+      modelStatus = {
+        configured: true,
+        attempted: false,
+        used: false,
+        repairAttempted: false,
+        fallbackUsed: false,
+        outcome: 'skipped',
+        skipReason: 'no planner candidates were available for model ranking',
+      };
+    } else {
       const context: PlannerModelContext = {
         pageUrl,
         depth,
@@ -93,17 +112,40 @@ export class QaPlanner {
             };
           }
         }
-        modelUsed = true;
+        modelStatus = {
+          configured: true,
+          attempted: true,
+          used: true,
+          repairAttempted: false,
+          fallbackUsed: false,
+          outcome: 'used',
+        };
       } catch (error: unknown) {
-        modelError = String(error);
+        modelStatus = {
+          configured: true,
+          attempted: true,
+          used: false,
+          repairAttempted: false,
+          fallbackUsed: true,
+          outcome: 'fallback',
+          error: String(error),
+        };
       }
     }
+
+    assertModelExecutionStatus(modelStatus);
 
     plans.sort((a, b) => {
       if (a.decision.allowed !== b.decision.allowed) return a.decision.allowed ? -1 : 1;
       return b.score - a.score || a.candidate.locatorIndex - b.candidate.locatorIndex;
     });
 
-    return { plans, scenarios, modelUsed, modelError };
+    return {
+      plans,
+      scenarios,
+      modelStatus,
+      modelUsed: modelStatus.used,
+      modelError: modelStatus.error,
+    };
   }
 }
