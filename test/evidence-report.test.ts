@@ -70,7 +70,14 @@ function result(runDir: string, screenshot: string): QaRunResult {
       actions: 0, cleanupAttempted: false, cleanupFailed: false,
     },
     githubQa: { enabled: true, memoryExisted: true, untracked: 0, newIssues: 1, persistent: 2, resolved: 3, memoryUpdated: false },
-    ux: { enabled: true, pagesAttempted: 1, pagesAnalyzed: 1, pagesFailed: 0, completeness: 1, valid: true, score: 70, opportunities: 1, highImpact: 1, mediumImpact: 0, lowImpact: 0, reasonerUsed: false },
+    ux: {
+      enabled: true, pagesAttempted: 1, pagesAnalyzed: 1, pagesFailed: 0, completeness: 1, valid: true, score: 70,
+      opportunities: 1, highImpact: 1, mediumImpact: 0, lowImpact: 0,
+      reasonerStatus: {
+        configured: false, attempted: false, used: false, repairAttempted: false, fallbackUsed: false, outcome: 'not-configured',
+      },
+      reasonerUsed: false,
+    },
     uxLearning: { enabled: true, memoryExisted: true, status: 'stable', memoryUpdated: false },
     outputDir: runDir,
   };
