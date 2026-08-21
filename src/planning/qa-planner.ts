@@ -20,6 +20,7 @@ export class QaPlanner {
     candidates: ExplorationCandidate[],
     riskMode: RiskMode,
     pageState?: PageStateSnapshot,
+    interactionStateId?: string,
   ): Promise<PlannerRankingResult> {
     const effectiveState: PageStateSnapshot = pageState ?? {
       url: pageUrl,
@@ -44,7 +45,7 @@ export class QaPlanner {
         ...policyDecision,
         reasons: [...policyDecision.reasons, ...scenarioScore.reasons],
       };
-      this.coverage.discoverCandidate(pageUrl, candidate, decision.risk, decision.allowed);
+      this.coverage.discoverCandidate(pageUrl, candidate, decision.risk, decision.allowed, interactionStateId);
 
       let score = decision.interestScore + scenarioScore.boost;
       if (!this.coverage.wasCandidateExercised(pageUrl, candidate.id)) score += 30;
