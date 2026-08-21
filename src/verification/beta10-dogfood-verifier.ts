@@ -29,6 +29,7 @@ export interface Beta10DogfoodVerifierOptions {
   minVideos?: number;
   requireModel?: boolean;
   requireUxReasoner?: boolean;
+  requireRouteManifestEvidence?: boolean;
   reportData?: DogfoodReportDataLike;
   candidateSha?: string;
   expectedCandidateSha?: string;
@@ -46,6 +47,7 @@ export interface Beta10DogfoodVerification {
     rawFindings: number;
     clusters: number;
     videos: number;
+    routeManifestSeedEvents: number;
     plannerStatus: string;
     uxReasonerOutcome: string;
   };
@@ -89,6 +91,18 @@ export function verifyBeta10Dogfood(
       ? `all ${requiredPaths.length} required route(s) were visited`
       : `missing required route(s): ${missingPaths.join(', ')}`,
   ));
+
+  const routeManifestSeedEvents = result.events.filter((event) =>
+    event.kind === 'action' && event.details?.routeManifestSeed === true).length;
+  if (options.requireRouteManifestEvidence) {
+    checks.push(check(
+      'route-manifest-evidence',
+      routeManifestSeedEvents > 0 ? 'pass' : 'fail',
+      routeManifestSeedEvents > 0
+        ? `${routeManifestSeedEvents} route-manifest seeded navigation event(s) recorded`
+        : 'required route-manifest evidence is absent from the run',
+    ));
+  }
 
   const eligibleCoverage = result.coverage.eligibleInteractionCoverage ?? result.coverage.interactionCoverage;
   checks.push(check(
@@ -208,6 +222,7 @@ export function verifyBeta10Dogfood(
       rawFindings: result.findings.length,
       clusters: result.findingClusters?.clusters ?? 0,
       videos,
+      routeManifestSeedEvents,
       plannerStatus: result.planner?.status ?? 'unknown',
       uxReasonerOutcome: result.ux?.reasonerStatus?.outcome ?? 'unknown',
     },
