@@ -1,3 +1,4 @@
+import type { FindingClusterSummary } from '../contracts/finding-cluster-contracts.js';
 import type { EvidenceTruthAssessment, ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { DeviceMode, DevicePlatform } from '../device/device-provider.js';
 
@@ -315,6 +316,7 @@ export interface QaRunResult {
   actions: number;
   events: QaEvent[];
   findings: Finding[];
+  findingClusters?: FindingClusterSummary;
   coverage: CoverageSnapshot;
   visualBaseline: VisualBaselineSummary;
   api: ApiQaSummary;
