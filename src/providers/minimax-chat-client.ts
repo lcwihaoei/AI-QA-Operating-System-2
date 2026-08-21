@@ -88,6 +88,22 @@ export interface MiniMaxCallStats {
   attempts: number;
   latencyMs: number;
   model: string;
+  schemaRepairAttempts: number;
+  schemaRepairUsed: boolean;
+}
+
+function schemaIssueSummary(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 12)
+    .map((issue) => `${issue.path.length ? issue.path.join('.') : '<root>'}: ${issue.message}`)
+    .join('; ')
+    .slice(0, 2_000);
+}
+
+function repairPayload(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (!serialized) return 'null';
+  return serialized.slice(0, 32_000);
 }
 
 export class MiniMaxChatClient {
@@ -160,18 +176,54 @@ export class MiniMaxChatClient {
     return parsed.choices[0]!.message.content;
   }
 
+  private async repairSchema<T>(value: unknown, error: z.ZodError, schema: z.ZodType<T>): Promise<T> {
+    const system = 'You repair JSON structure only. Return JSON only. Preserve existing values and candidate IDs. Do not invent new recommendations, actions, permissions, or product facts. If a required array is missing and there are no existing items to preserve, use an empty array.';
+    const prompt = `The previous JSON failed validation. Repair only the structural/schema errors. Validation issues: ${schemaIssueSummary(error)}. Previous JSON: ${repairPayload(value)}`;
+    const content = await this.performRequest(system, prompt);
+    return schema.parse(extractMiniMaxJson(content));
+  }
+
   async completeJson<T>(system: string, prompt: string, schema: z.ZodType<T>): Promise<T> {
     const startedAt = Date.now();
     let lastError: unknown;
     let attemptsMade = 0;
+    let schemaRepairAttempts = 0;
 
     for (let attempt = 1; attempt <= this.retryAttempts; attempt += 1) {
       attemptsMade = attempt;
       try {
         const content = await this.performRequest(system, prompt);
-        const result = schema.parse(extractMiniMaxJson(content));
-        this.lastCallStats = { attempts: attempt, latencyMs: Date.now() - startedAt, model: this.resolvedModel };
-        return result;
+        const extracted = extractMiniMaxJson(content);
+        try {
+          const result = schema.parse(extracted);
+          this.lastCallStats = {
+            attempts: attempt,
+            latencyMs: Date.now() - startedAt,
+            model: this.resolvedModel,
+            schemaRepairAttempts,
+            schemaRepairUsed: false,
+          };
+          return result;
+        } catch (error: unknown) {
+          if (!(error instanceof z.ZodError)) throw error;
+          schemaRepairAttempts = 1;
+          attemptsMade = attempt + 1;
+          try {
+            const repaired = await this.repairSchema(extracted, error, schema);
+            this.lastCallStats = {
+              attempts: attemptsMade,
+              latencyMs: Date.now() - startedAt,
+              model: this.resolvedModel,
+              schemaRepairAttempts,
+              schemaRepairUsed: true,
+            };
+            return repaired;
+          } catch (repairError: unknown) {
+            const initial = schemaIssueSummary(error);
+            lastError = new Error(`MiniMax schema repair failed; initial validation: ${initial}; repair error: ${String(repairError)}`);
+            break;
+          }
+        }
       } catch (error: unknown) {
         lastError = error;
         if (attempt >= this.retryAttempts || !this.shouldRetry(error)) break;
@@ -180,7 +232,13 @@ export class MiniMaxChatClient {
       }
     }
 
-    this.lastCallStats = { attempts: attemptsMade, latencyMs: Date.now() - startedAt, model: this.resolvedModel };
+    this.lastCallStats = {
+      attempts: attemptsMade,
+      latencyMs: Date.now() - startedAt,
+      model: this.resolvedModel,
+      schemaRepairAttempts,
+      schemaRepairUsed: false,
+    };
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
