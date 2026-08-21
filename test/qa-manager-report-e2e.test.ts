@@ -15,7 +15,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!enabled)('QaManager beta7 evidence report E2E', () => {
-  it('produces a self-contained report bundle with a real screenshot and viewport video', async () => {
+  it('produces a self-contained report bundle with a real screenshot, viewport video, and lossless finding clusters', async () => {
     const server = createServer((_request, response) => {
       response.statusCode = 200;
       response.setHeader('content-type', 'text/html; charset=utf-8');
@@ -55,6 +55,9 @@ describe.skipIf(!enabled)('QaManager beta7 evidence report E2E', () => {
     });
 
     expect(result.findings.some((finding) => finding.title === 'Visible text is clipped')).toBe(true);
+    expect(result.findingClusters?.rawFindings).toBe(result.findings.length);
+    expect(result.findingClusters?.items.flatMap((cluster) => cluster.memberFindingIds)).toHaveLength(result.findings.length);
+    expect(result.findingClusters?.clusters).toBeGreaterThan(0);
     expect(result.report?.enabled).toBe(true);
     expect(result.report?.videos).toBe(1);
     expect(result.report?.findings).toBeGreaterThan(0);
