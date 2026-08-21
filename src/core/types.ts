@@ -1,3 +1,5 @@
+import type { FindingClusterSummary } from '../contracts/finding-cluster-contracts.js';
+import type { EvidenceTruthAssessment, ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { DeviceMode, DevicePlatform } from '../device/device-provider.js';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -20,6 +22,7 @@ export interface QaRunOptions {
   sameOriginOnly: boolean;
   riskMode: RiskMode;
   visualViewports: VisualViewportName[];
+  routeSeeds?: string[];
   plannerEndpoint?: string;
   plannerToken?: string;
   visualEndpoint?: string;
@@ -81,6 +84,29 @@ export interface PlannedCandidate {
   score: number;
 }
 
+export type CoverageTerminalReason =
+  | 'budget-exhausted'
+  | 'duplicate-state-action'
+  | 'blocked-by-risk-policy'
+  | 'stale-after-state-change'
+  | 'not-visible'
+  | 'pointer-intercepted'
+  | 'auth-gated'
+  | 'unsupported-control'
+  | 'navigation-duplicate'
+  | 'execution-error';
+
+export interface CoverageTerminalGap {
+  scope: 'interaction';
+  url: string;
+  candidateId: string;
+  label: string;
+  reason: CoverageTerminalReason;
+  detail?: string;
+  eligible: boolean;
+  explained: true;
+}
+
 export interface CoveragePageSnapshot {
   url: string;
   depth: number;
@@ -88,7 +114,10 @@ export interface CoveragePageSnapshot {
   visits: number;
   discoveredCandidates: number;
   actionableCandidates: number;
+  eligibleCandidates?: number;
   exercisedCandidates: number;
+  terminalEligibleCandidates?: number;
+  unexplainedEligibleCandidates?: number;
   blockedCandidates: number;
   errors: number;
 }
@@ -96,9 +125,34 @@ export interface CoveragePageSnapshot {
 export interface CoverageSnapshot {
   score: number;
   pageCoverage: number;
+  /** @deprecated Beta.9 allowed-candidate percentage. Read eligibleInteractionCoverage for Beta.10 decisions. */
   interactionCoverage: number;
+  rawInteractionCoverage?: number;
+  eligibleInteractionCoverage?: number;
+  discoveredInteractions?: number;
+  allowedInteractions?: number;
+  eligibleInteractions?: number;
+  exercisedEligibleInteractions?: number;
+  explainedEligibleGaps?: number;
+  unexplainedEligibleGaps?: number;
+  gapReasonCounts?: Partial<Record<CoverageTerminalReason, number>>;
   pages: CoveragePageSnapshot[];
   gaps: string[];
+  terminalGaps?: CoverageTerminalGap[];
+}
+
+export type PlannerExecutionOutcome = 'not-configured' | 'skipped' | 'active' | 'partial-fallback' | 'unavailable';
+
+export interface PlannerExecutionSummary {
+  configured: boolean;
+  status: PlannerExecutionOutcome;
+  pagesObserved: number;
+  pagesAttempted: number;
+  pagesModelUsed: number;
+  pagesFallback: number;
+  repairAttempts: number;
+  failedCalls: number;
+  providers: string[];
 }
 
 export interface VisualBaselineSummary {
@@ -204,6 +258,8 @@ export interface UxIntelligenceSummary {
   highImpact: number;
   mediumImpact: number;
   lowImpact: number;
+  reasonerStatus: ModelExecutionStatus;
+  /** @deprecated Read reasonerStatus.used. Kept for Beta.9 result compatibility. */
   reasonerUsed: boolean;
   opportunityPath?: string;
   toolingError?: string;
@@ -219,6 +275,18 @@ export interface UxLearningSummary {
   currentScore?: number;
   delta?: number;
   memoryUpdated: boolean;
+  toolingError?: string;
+}
+
+export interface ReproductionSummary {
+  enabled: boolean;
+  eligible: number;
+  attempted: number;
+  confirmed: number;
+  notReproduced: number;
+  blocked: number;
+  notRun: number;
+  maxAttempts: number;
   toolingError?: string;
 }
 
@@ -251,6 +319,7 @@ export interface Finding {
   reproduction: string[];
   evidence: string[];
   fingerprint: string;
+  truth?: EvidenceTruthAssessment;
 }
 
 export interface QaRunResult {
@@ -261,12 +330,15 @@ export interface QaRunResult {
   actions: number;
   events: QaEvent[];
   findings: Finding[];
+  findingClusters?: FindingClusterSummary;
   coverage: CoverageSnapshot;
+  planner?: PlannerExecutionSummary;
   visualBaseline: VisualBaselineSummary;
   api: ApiQaSummary;
   correlation: CausalCorrelationSummary;
   semanticState: SemanticStateSummary;
   device: DeviceQaSummary;
+  reproduction?: ReproductionSummary;
   githubQa?: GitHubQaSummary;
   controlPlane?: ControlPlaneSummary;
   ux?: UxIntelligenceSummary;

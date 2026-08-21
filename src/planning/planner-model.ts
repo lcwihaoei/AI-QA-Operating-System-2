@@ -1,3 +1,4 @@
+import type { ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { CandidateKind, CandidateRisk, CoverageSnapshot, PlannedCandidate, RiskMode } from '../core/types.js';
 import type { PageStateSnapshot } from './page-state-analyzer.js';
 import type { ScenarioIntent } from './scenario-generator.js';
@@ -29,13 +30,22 @@ export interface PlannerModelRecommendation {
   reason?: string;
 }
 
+export interface PlannerModelExecutionMetadata {
+  provider?: string;
+  repairAttempted: boolean;
+}
+
 export interface PlannerModel {
   recommend(context: PlannerModelContext): Promise<PlannerModelRecommendation[]>;
+  getLastExecutionMetadata?(): PlannerModelExecutionMetadata | undefined;
 }
 
 export interface PlannerRankingResult {
   plans: PlannedCandidate[];
   scenarios: ScenarioIntent[];
+  modelStatus: ModelExecutionStatus;
+  /** @deprecated Read modelStatus.used. Kept for Beta.9 result compatibility. */
   modelUsed: boolean;
+  /** @deprecated Read modelStatus.error. Kept for Beta.9 result compatibility. */
   modelError?: string;
 }

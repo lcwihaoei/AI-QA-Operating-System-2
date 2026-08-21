@@ -58,7 +58,18 @@ function result(runDir: string, screenshot: string): QaRunResult {
       evidence: [screenshot],
       fingerprint: 'abc123',
     }],
-    coverage: { score: 73, pageCoverage: 1, interactionCoverage: 0.4, pages: [], gaps: [] },
+    coverage: { score: 73, pageCoverage: 100, interactionCoverage: 40, pages: [], gaps: [] },
+    planner: {
+      configured: true,
+      status: 'partial-fallback',
+      pagesObserved: 1,
+      pagesAttempted: 1,
+      pagesModelUsed: 0,
+      pagesFallback: 1,
+      repairAttempts: 1,
+      failedCalls: 1,
+      providers: ['fixture-model'],
+    },
     visualBaseline: { enabled: true, existed: true, newSignals: 1, persistentSignals: 2, resolvedSignals: 3, updated: false },
     api: { enabled: false, mode: 'off', operationsDiscovered: 0, operationsTested: 0, operationsSkipped: 0 },
     correlation: { chains: 0, highConfidence: 0, apiMatched: 0, browserNetworkFailures: 0 },
@@ -70,7 +81,14 @@ function result(runDir: string, screenshot: string): QaRunResult {
       actions: 0, cleanupAttempted: false, cleanupFailed: false,
     },
     githubQa: { enabled: true, memoryExisted: true, untracked: 0, newIssues: 1, persistent: 2, resolved: 3, memoryUpdated: false },
-    ux: { enabled: true, pagesAttempted: 1, pagesAnalyzed: 1, pagesFailed: 0, completeness: 1, valid: true, score: 70, opportunities: 1, highImpact: 1, mediumImpact: 0, lowImpact: 0, reasonerUsed: false },
+    ux: {
+      enabled: true, pagesAttempted: 1, pagesAnalyzed: 1, pagesFailed: 0, completeness: 1, valid: true, score: 70,
+      opportunities: 1, highImpact: 1, mediumImpact: 0, lowImpact: 0,
+      reasonerStatus: {
+        configured: true, attempted: true, used: false, repairAttempted: false, fallbackUsed: true, outcome: 'fallback', error: 'schema-invalid',
+      },
+      reasonerUsed: false,
+    },
     uxLearning: { enabled: true, memoryExisted: true, status: 'stable', memoryUpdated: false },
     outputDir: runDir,
   };
@@ -113,9 +131,81 @@ describe('beta7 evidence report', () => {
     expect(html).toContain('Add visible labels or aria-label.');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('<strong>100%</strong><span>Page coverage</span>');
+    expect(html).toContain('<strong>40%</strong><span>Eligible interaction coverage</span>');
+    expect(html).toContain('<strong>40%</strong><span>Raw interaction coverage</span>');
+    expect(html).toContain('AI execution truth');
+    expect(html).toContain('Partial fallback');
+    expect(html).toContain('Attempted · failed');
+    expect(html).not.toContain('AI Active');
+    expect(html).not.toContain('10000%');
+    expect(html).not.toContain('4000%');
     expect(data).toContain('"status": "new"');
+    expect(data).toContain('"classification": "potential-product-defect"');
+    expect(data).toContain('"pageCoverage": 100');
+    expect(data).toContain('"interactionCoverage": 40');
+    expect(data).toContain('"rawInteractionCoverage": 40');
+    expect(data).toContain('"eligibleInteractionCoverage": 40');
+    expect(data).toContain('"modelExecution"');
+    expect(data).toContain('"status": "partial-fallback"');
     expect(data).not.toContain(runDir);
     expect(markdown).toContain('PASS_WITH_ISSUES');
+    expect(markdown).toContain('- Planner execution: Partial fallback');
+    expect(markdown).toContain('- UX reasoner: Attempted · failed');
+    expect(markdown).toContain('- Page coverage: 100%');
+    expect(markdown).toContain('- Raw interaction coverage: 40%');
+    expect(markdown).toContain('- Eligible interaction coverage: 40%');
+    expect(markdown).toContain('[potential-product-defect]');
     expect(markdown).toContain('Inspect the component width/height');
+  });
+
+  it('does not clamp an entirely offscreen element into a misleading screenshot marker', async () => {
+    const { runDir, screenshot } = await fixture();
+    const qa = result(runDir, screenshot);
+    const message = 'Interactive element is unreachable or clipped by the viewport: a.navbar-brand-text "LeeEng" [viewport=desktop 1440x1000]';
+    qa.events = [{
+      timestamp: '2026-08-20T00:00:05.000Z',
+      kind: 'ui',
+      url: 'https://example.com/settings',
+      message,
+      details: {
+        visual: true,
+        visualKind: 'interactive-offscreen',
+        viewport: 'desktop',
+        viewportWidth: 1440,
+        viewportHeight: 1000,
+        screenshot,
+        element: 'a.navbar-brand-text "LeeEng"',
+        rect: { x: -140, y: 25, width: 64, height: 29 },
+      },
+    }];
+    qa.findings = [{
+      id: 'BUG-0002', kind: 'ui', severity: 'medium', title: 'Interactive control outside viewport',
+      url: 'https://example.com/settings', message, reproduction: ['Open settings'], evidence: [screenshot], fingerprint: 'offscreen-1',
+    }];
+
+    const summary = await generateEvidenceReport({ runDir, result: qa, uxOpportunities: [] });
+    const html = await readFile(summary.htmlPath!, 'utf8');
+    const parsed = JSON.parse(await readFile(summary.dataPath!, 'utf8')) as { findings: Array<Record<string, unknown>> };
+    const finding = parsed.findings[0]!;
+
+    expect(finding.classification).toBe('potential-product-defect');
+    expect(finding.confidence).toBe(0.65);
+    expect(finding.annotationStatus).toBe('unverified');
+    expect(String(finding.annotationReason)).toContain('entirely outside the screenshot viewport');
+    expect(html).toContain('Annotation unverified');
+    expect(html).not.toContain('<span>BUG-0002</span>');
+  });
+
+  it('records an explicit reason when a visual finding lacks screenshot evidence', async () => {
+    const { runDir, screenshot } = await fixture();
+    const qa = result(runDir, screenshot);
+    qa.events[0]!.details = { ...qa.events[0]!.details, screenshot: undefined };
+    qa.findings[0]!.evidence = [];
+
+    const summary = await generateEvidenceReport({ runDir, result: qa, uxOpportunities: [] });
+    const parsed = JSON.parse(await readFile(summary.dataPath!, 'utf8')) as { findings: Array<Record<string, unknown>> };
+    expect(parsed.findings[0]?.screenshot).toBeUndefined();
+    expect(parsed.findings[0]?.screenshotReason).toBe('Visual finding has no screenshot evidence available within this QA run.');
   });
 });

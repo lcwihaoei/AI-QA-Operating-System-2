@@ -1,3 +1,5 @@
+import type { ModelExecutionStatus } from '../contracts/quality-contracts.js';
+
 export type UxOpportunityCategory =
   | 'discoverability'
   | 'cognitive-load'
@@ -60,6 +62,8 @@ export interface UxIntelligenceSummary {
   highImpact: number;
   mediumImpact: number;
   lowImpact: number;
+  reasonerStatus: ModelExecutionStatus;
+  /** @deprecated Read reasonerStatus.used. Kept for Beta.9 result compatibility. */
   reasonerUsed: boolean;
   toolingError?: string;
 }
@@ -77,6 +81,12 @@ export interface UxReasonerContext {
   deterministic: UxOpportunity[];
 }
 
+export interface UxReasonerExecutionMetadata {
+  provider?: string;
+  repairAttempted: boolean;
+}
+
 export interface UxReasoner {
   propose(context: UxReasonerContext): Promise<Array<Omit<UxOpportunity, 'id' | 'source'>>>;
+  getLastExecutionMetadata?(): UxReasonerExecutionMetadata | undefined;
 }

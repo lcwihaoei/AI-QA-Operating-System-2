@@ -2,8 +2,10 @@ import { chromium, type Browser, type Locator, type Page } from '@playwright/tes
 import type { BrowserStorageState } from '../core/browser-state.js';
 import type { EvidenceStore } from '../evidence/evidence-store.js';
 import type { ExplorationCandidate, QaEvent, QaRunOptions } from '../core/types.js';
+import { clickabilityPreflight } from '../planning/clickability-preflight.js';
 import { CoverageGraph } from '../planning/coverage-graph.js';
 import { selectExplorationPlans } from '../planning/exploration-selection.js';
+import { captureInteractionStateFingerprint } from '../planning/interaction-state-fingerprint.js';
 import { PageStateAnalyzer } from '../planning/page-state-analyzer.js';
 import { QaPlanner } from '../planning/qa-planner.js';
 import { SyntheticInputStrategy } from '../planning/synthetic-input-strategy.js';
@@ -14,6 +16,7 @@ type QueueItem = {
   url: string;
   depth: number;
   source?: { pageUrl: string; candidateId: string };
+  seed?: 'route-manifest';
 };
 
 export interface BrowserExplorationResult {
@@ -26,6 +29,7 @@ export interface BrowserExplorationResult {
 
 export class BrowserExplorer {
   private static readonly candidateSelector = 'a[href], button, [role="button"], input:not([type="hidden"]), textarea, select';
+  private uiSignalCounter = 0;
 
   constructor(
     private readonly evidence: EvidenceStore,
@@ -40,11 +44,35 @@ export class BrowserExplorer {
     let storageState: BrowserStorageState | undefined;
     const events: QaEvent[] = [];
     const visited = new Set<string>();
+    const queuedUrls = new Set<string>();
+    const attemptedStateActions = new Set<string>();
     const uxSnapshots = new Map<string, UxPageSnapshot>();
-    const queued: QueueItem[] = [{ url: this.normalizeUrl(options.url), depth: 0 }];
+    const startUrl = this.normalizeUrl(options.url);
+    const origin = new URL(startUrl).origin;
+    const routeSeeds = [...new Set(
+      (options.routeSeeds ?? [])
+        .slice(0, 200)
+        .map((seed) => this.normalizeNavigableUrl(seed, startUrl))
+        .filter((seed): seed is string => Boolean(seed))
+        .filter((seed) => seed !== startUrl)
+        .filter((seed) => !options.sameOriginOnly || new URL(seed).origin === origin),
+    )];
+    const queued: QueueItem[] = [
+      { url: startUrl, depth: 0 },
+      ...routeSeeds.map((url) => ({ url, depth: 0, seed: 'route-manifest' as const })),
+    ];
+    queuedUrls.add(startUrl);
+    for (const seed of routeSeeds) queuedUrls.add(seed);
     let actions = 0;
 
-    this.coverage.discoverPage(this.normalizeUrl(options.url), 0);
+    this.coverage.discoverPage(startUrl, 0);
+    for (const seed of routeSeeds) this.coverage.discoverPage(seed, 0);
+    if (routeSeeds.length > 0) {
+      events.push(this.event('planner', startUrl, `Seeded ${routeSeeds.length} explicit route(s) from manifest`, {
+        routeManifest: true,
+        seededRoutes: routeSeeds.length,
+      }));
+    }
 
     try {
       browser = await chromium.launch({ headless: options.headless });
@@ -54,10 +82,10 @@ export class BrowserExplorer {
       });
       const page = await context.newPage();
       this.attachObservers(page, events);
-      const origin = new URL(options.url).origin;
 
       while (queued.length && actions < options.maxActions) {
         const item = queued.shift()!;
+        queuedUrls.delete(item.url);
         if (visited.has(item.url) || item.depth > options.maxDepth) continue;
         if (options.sameOriginOnly && new URL(item.url).origin !== origin) continue;
 
@@ -74,7 +102,11 @@ export class BrowserExplorer {
         if (item.source && response) this.coverage.markCandidateExercised(item.source.pageUrl, item.source.candidateId);
         if (!response || response.status() >= 400) this.coverage.markPageError(actualUrl);
 
-        events.push(this.event('action', actualUrl, `Navigate to ${item.url}`, { status: response?.status(), depth: item.depth }));
+        events.push(this.event('action', actualUrl, `Navigate to ${item.url}`, {
+          status: response?.status(),
+          depth: item.depth,
+          routeManifestSeed: item.seed === 'route-manifest',
+        }));
         await page.waitForTimeout(180);
         await this.detectUiSignals(page, events);
         const shot = await this.evidence.screenshot(page, `page-${visited.size}`);
@@ -91,98 +123,189 @@ export class BrowserExplorer {
           }));
         }
 
-        const candidates = await this.collectCandidates(page);
-        const pageState = await this.pageStateAnalyzer.analyze(page);
-        const ranking = await this.planner.rank(actualUrl, item.depth, candidates, options.riskMode, pageState);
-        const plans = ranking.plans;
-        const allowedPlans = plans.filter((plan) => plan.decision.allowed);
-        const blockedPlans = plans.filter((plan) => !plan.decision.allowed);
-        const selected = selectExplorationPlans(plans, options.maxCandidatesPerPage);
-        events.push(this.event('planner', actualUrl, `Planner ranked ${plans.length} candidates`, {
-          allowed: allowedPlans.length,
-          blocked: blockedPlans.length,
-          selectedNavigation: selected.navigation.length,
-          selectedInteractions: selected.interactions.length,
-          modelUsed: ranking.modelUsed,
-          modelError: ranking.modelError,
-          archetypes: pageState.archetypes,
-          scenarios: ranking.scenarios.map((scenario) => ({ id: scenario.id, label: scenario.label, priority: scenario.priority })),
-          pageSignals: {
-            title: pageState.title,
-            forms: pageState.formCount,
-            fields: pageState.fieldCount,
-            searchFields: pageState.searchFieldCount,
-            dialogs: pageState.hasDialog,
-            tables: pageState.hasTable,
-          },
-          top: allowedPlans.slice(0, 8).map((plan) => ({
-            id: plan.candidate.id,
-            label: plan.candidate.label,
-            kind: plan.candidate.kind,
-            score: plan.score,
-            risk: plan.decision.risk,
-            reasons: plan.decision.reasons,
-          })),
-          blockedExamples: blockedPlans.slice(0, 5).map((plan) => ({
-            label: plan.candidate.label,
-            kind: plan.candidate.kind,
-            reasons: plan.decision.reasons,
-          })),
-        }));
+        const maxInteractionRounds = Math.max(1, Math.min(12, options.maxCandidatesPerPage));
+        let interactionRound = 0;
+        let shouldReplan = true;
 
-        // First enqueue several safe links so breadth is preserved even when a
-        // single route/interaction family dominates planner ranking.
-        for (const plan of selected.navigation) {
-          const candidate = plan.candidate;
-          if (!candidate.href) continue;
-          const next = this.normalizeNavigableUrl(candidate.href, actualUrl);
-          if (!next) continue;
-          if (options.sameOriginOnly && new URL(next).origin !== origin) continue;
-          if (!visited.has(next) && item.depth < options.maxDepth) {
+        while (shouldReplan && actions < options.maxActions && interactionRound < maxInteractionRounds) {
+          interactionRound += 1;
+          shouldReplan = false;
+
+          const candidates = await this.collectCandidates(page);
+          const interactionStateId = await this.interactionStateId(page, actualUrl);
+          const pageState = await this.pageStateAnalyzer.analyze(page);
+          const ranking = await this.planner.rank(actualUrl, item.depth, candidates, options.riskMode, pageState, interactionStateId);
+          const plans = ranking.plans;
+          const allowedPlans = plans.filter((plan) => plan.decision.allowed);
+          const blockedPlans = plans.filter((plan) => !plan.decision.allowed);
+          const duplicateStatePlans = plans.filter((plan) =>
+            plan.candidate.kind !== 'link'
+            && !this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)
+            && attemptedStateActions.has(stateActionKey(actualUrl, interactionStateId, plan.candidate.id)));
+          const selectablePlans = plans.filter((plan) =>
+            plan.candidate.kind === 'link'
+            || (!this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)
+              && !attemptedStateActions.has(stateActionKey(actualUrl, interactionStateId, plan.candidate.id))));
+          const selected = selectExplorationPlans(selectablePlans, options.maxCandidatesPerPage, {
+            remainingActions: options.maxActions - actions,
+          });
+
+          for (const plan of duplicateStatePlans) {
+            if (!this.coverage.candidateTerminalReason(actualUrl, plan.candidate.id)) {
+              this.coverage.markCandidateTerminal(actualUrl, plan.candidate.id, 'duplicate-state-action', 'same candidate was already attempted in the same structural page state');
+            }
+          }
+
+          events.push(this.event('planner', actualUrl, `Planner ranked ${plans.length} candidates`, {
+            interactionRound,
+            interactionStateId,
+            allowed: allowedPlans.length,
+            blocked: blockedPlans.length,
+            selectedNavigation: selected.navigation.length,
+            selectedInteractions: selected.interactions.length,
+            duplicateStateActionsSkipped: duplicateStatePlans.length,
+            previouslyExercisedInteractions: plans.filter((plan) =>
+              plan.candidate.kind !== 'link' && this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)).length,
+            modelStatus: ranking.modelStatus,
+            modelUsed: ranking.modelUsed,
+            modelError: ranking.modelError,
+            archetypes: pageState.archetypes,
+            scenarios: ranking.scenarios.map((scenario) => ({ id: scenario.id, label: scenario.label, priority: scenario.priority })),
+            pageSignals: {
+              title: pageState.title,
+              forms: pageState.formCount,
+              fields: pageState.fieldCount,
+              searchFields: pageState.searchFieldCount,
+              dialogs: pageState.hasDialog,
+              tables: pageState.hasTable,
+            },
+            top: allowedPlans.slice(0, 8).map((plan) => ({
+              id: plan.candidate.id,
+              label: plan.candidate.label,
+              kind: plan.candidate.kind,
+              score: plan.score,
+              risk: plan.decision.risk,
+              reasons: plan.decision.reasons,
+            })),
+            blockedExamples: blockedPlans.slice(0, 5).map((plan) => ({
+              label: plan.candidate.label,
+              kind: plan.candidate.kind,
+              reasons: plan.decision.reasons,
+            })),
+          }));
+
+          for (const plan of selected.navigation) {
+            const candidate = plan.candidate;
+            if (!candidate.href) continue;
+            const next = this.normalizeNavigableUrl(candidate.href, actualUrl);
+            if (!next) continue;
+            if (options.sameOriginOnly && new URL(next).origin !== origin) continue;
+            if (visited.has(next)) {
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'navigation-duplicate', 'target route already covered');
+              continue;
+            }
+            if (queuedUrls.has(next)) {
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'navigation-duplicate', 'target route already queued');
+              continue;
+            }
+            if (item.depth >= options.maxDepth) {
+              this.coverage.markCandidateTerminal(actualUrl, candidate.id, 'budget-exhausted', 'navigation depth limit reached');
+              continue;
+            }
             this.coverage.discoverPage(next, item.depth + 1);
             queued.push({
               url: next,
               depth: item.depth + 1,
               source: { pageUrl: actualUrl, candidateId: candidate.id },
             });
-          }
-        }
-
-        // Separately reserve real interaction capacity. Link-heavy products can
-        // therefore no longer starve buttons/fields out of every page budget.
-        for (const plan of selected.interactions) {
-          if (actions >= options.maxActions) break;
-          const candidate = plan.candidate;
-
-          if (candidate.kind === 'field') {
-            const exercised = await this.probeField(page, candidate, events, actions + 1);
-            if (!exercised) continue;
-            actions += 1;
-            this.coverage.markCandidateExercised(actualUrl, candidate.id);
-            await this.captureInteractionState(page, candidate, events, actions);
-            continue;
+            queuedUrls.add(next);
           }
 
-          if (candidate.kind === 'button') {
-            const outcome = await this.probeButton(page, candidate, events, actions + 1);
-            if (!outcome.exercised) continue;
-            actions += 1;
-            this.coverage.markCandidateExercised(actualUrl, candidate.id);
-            await this.captureInteractionState(page, candidate, events, actions);
+          for (const plan of selected.interactions) {
+            if (actions >= options.maxActions) break;
+            const candidate = plan.candidate;
+            attemptedStateActions.add(stateActionKey(actualUrl, interactionStateId, candidate.id));
 
-            if (outcome.destination) {
-              const destination = this.normalizeNavigableUrl(outcome.destination, actualUrl);
-              if (destination && (!options.sameOriginOnly || new URL(destination).origin === origin)) {
-                this.coverage.discoverPage(destination, item.depth + 1);
-                if (!visited.has(destination) && item.depth < options.maxDepth) {
-                  queued.push({ url: destination, depth: item.depth + 1 });
+            if (candidate.kind === 'field') {
+              const exercised = await this.probeField(page, candidate, events, actions + 1);
+              if (!exercised) continue;
+              actions += 1;
+              this.coverage.markCandidateExercised(actualUrl, candidate.id);
+              await this.captureInteractionState(page, candidate, events, actions);
+              const nextStateId = await this.interactionStateId(page, actualUrl);
+              const materialStateChanged = nextStateId !== interactionStateId;
+              if (materialStateChanged) this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
+              shouldReplan = true;
+              events.push(this.event('planner', page.url(), 'Refreshed interaction frontier after field action', {
+                stateReplan: true,
+                materialStateChanged,
+                candidateId: candidate.id,
+                interactionRound,
+                previousInteractionStateId: interactionStateId,
+                nextInteractionStateId: nextStateId,
+              }));
+              break;
+            }
+
+            if (candidate.kind === 'button') {
+              const outcome = await this.probeButton(page, candidate, events, actions + 1);
+              if (!outcome.exercised) continue;
+              actions += 1;
+              this.coverage.markCandidateExercised(actualUrl, candidate.id);
+              await this.captureInteractionState(page, candidate, events, actions);
+
+              if (outcome.destination) {
+                const destination = this.normalizeNavigableUrl(outcome.destination, actualUrl);
+                if (destination && (!options.sameOriginOnly || new URL(destination).origin === origin)) {
+                  this.coverage.discoverPage(destination, item.depth + 1);
+                  if (!visited.has(destination) && !queuedUrls.has(destination) && item.depth < options.maxDepth) {
+                    queued.push({ url: destination, depth: item.depth + 1 });
+                    queuedUrls.add(destination);
+                  }
                 }
+                await page.goBack({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => undefined);
+                await page.waitForTimeout(120);
               }
-              await page.goBack({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => undefined);
-              await page.waitForTimeout(120);
+
+              const nextStateId = await this.interactionStateId(page, actualUrl);
+              const materialStateChanged = nextStateId !== interactionStateId;
+              if (materialStateChanged) this.markSiblingPlansInvalidated(actualUrl, selected.interactions, candidate.id);
+              shouldReplan = true;
+              events.push(this.event('planner', page.url(), 'Refreshed interaction frontier after button action', {
+                stateReplan: true,
+                materialStateChanged,
+                candidateId: candidate.id,
+                interactionRound,
+                navigated: Boolean(outcome.destination),
+                previousInteractionStateId: interactionStateId,
+                nextInteractionStateId: nextStateId,
+              }));
+              break;
             }
           }
         }
+
+        if (shouldReplan && interactionRound >= maxInteractionRounds) {
+          this.coverage.markRemainingEligibleTerminal('budget-exhausted', actualUrl, 'per-page interaction-round budget reached');
+          events.push(this.event('planner', actualUrl, 'Stopped state replanning at the per-page interaction-round budget', {
+            terminalGap: true,
+            gapReason: 'budget-exhausted',
+            gapDetail: 'per-page interaction-round budget reached',
+            interactionRounds: interactionRound,
+            maxInteractionRounds,
+          }));
+        }
+      }
+
+      if (actions >= options.maxActions) {
+        this.coverage.markRemainingEligibleTerminal('budget-exhausted', undefined, 'global action budget reached');
+        events.push(this.event('planner', explorationUrl(visited, startUrl), 'Stopped exploration at the global action budget', {
+          terminalGap: true,
+          gapReason: 'budget-exhausted',
+          gapDetail: 'global action budget reached',
+          actions,
+          maxActions: options.maxActions,
+        }));
       }
 
       storageState = await context.storageState().catch(() => undefined);
@@ -192,6 +315,17 @@ export class BrowserExplorer {
     }
 
     return { events, visitedUrls: [...visited], actions, storageState, uxSnapshots: [...uxSnapshots.values()] };
+  }
+
+  private async interactionStateId(page: Page, url: string): Promise<string> {
+    return captureInteractionStateFingerprint(page).catch(() => `state-unavailable:${safePath(url)}`);
+  }
+
+  private markSiblingPlansInvalidated(url: string, plans: Array<{ candidate: ExplorationCandidate }>, exercisedId: string): void {
+    for (const plan of plans) {
+      if (plan.candidate.id === exercisedId) continue;
+      this.coverage.markCandidateTerminal(url, plan.candidate.id, 'stale-after-state-change', 'remaining plan invalidated after a material UI state transition');
+    }
   }
 
   private attachObservers(page: Page, events: QaEvent[]): void {
@@ -214,18 +348,53 @@ export class BrowserExplorer {
   }
 
   private async collectCandidates(page: Page): Promise<ExplorationCandidate[]> {
-    return page.locator(BrowserExplorer.candidateSelector).evaluateAll((elements) =>
-      elements.slice(0, 160).map((element, locatorIndex) => {
+    return page.locator(BrowserExplorer.candidateSelector).evaluateAll((elements) => {
+      const occurrences = new Map<string, number>();
+      const normalize = (value: string | null | undefined, max = 120): string => (value ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
+      const pathIdentity = (value: string | null | undefined): string | undefined => {
+        if (!value) return undefined;
+        try { return new URL(value, document.baseURI).pathname.slice(0, 240); }
+        catch { return value.split(/[?#]/, 1)[0]?.slice(0, 240); }
+      };
+      const ownerIdentity = (node: HTMLElement): string => {
+        const testAttribute = (element: Element): string | undefined =>
+          normalize(element.getAttribute('data-testid') || element.getAttribute('data-test') || element.getAttribute('data-cy'), 100) || undefined;
+        const owner = node.parentElement?.closest('form,dialog,[role="dialog"],[role="menu"],[role="tabpanel"],[role="region"]');
+        const parts: string[] = [];
+        if (owner) {
+          const ownerTest = testAttribute(owner);
+          if (ownerTest) parts.push(`test=${ownerTest}`);
+          else if ((owner as HTMLElement).id) parts.push(`id=${normalize((owner as HTMLElement).id, 100)}`);
+          else if (owner.getAttribute('aria-label')) parts.push(`aria=${normalize(owner.getAttribute('aria-label'), 100)}`);
+          else if (owner.getAttribute('role')) parts.push(`role=${normalize(owner.getAttribute('role'), 60)}`);
+          if (owner instanceof HTMLFormElement) {
+            const action = pathIdentity(owner.action);
+            if (action) parts.push(`action=${action}`);
+          }
+        }
+        let current: HTMLElement | null = node.parentElement;
+        const controls = Array.from(document.querySelectorAll<HTMLElement>('[aria-controls]'));
+        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+          if (!current.id) continue;
+          if (controls.some((control) => control.getAttribute('aria-controls') === current!.id)) {
+            parts.push(`controlled=${normalize(current.id, 100)}`);
+            break;
+          }
+        }
+        return parts.join('|') || 'root';
+      };
+
+      return elements.slice(0, 160).map((element, locatorIndex) => {
         const node = element as HTMLElement;
         const tagName = node.tagName.toLowerCase();
         const formControl = node as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
         const associatedLabel = 'labels' in formControl
           ? Array.from(formControl.labels ?? []).map((label) => label.innerText.trim()).filter(Boolean).join(' ')
           : '';
-        const label = (
+        const label = normalize(
           associatedLabel || node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') ||
-          node.getAttribute('name') || node.getAttribute('title') || ''
-        ).trim().slice(0, 120);
+          node.getAttribute('name') || node.getAttribute('title') || '',
+        );
         const href = tagName === 'a' ? (node as HTMLAnchorElement).href : undefined;
         const button = tagName === 'button' ? (node as HTMLButtonElement) : undefined;
         const type = tagName === 'input'
@@ -239,9 +408,24 @@ export class BrowserExplorer {
                 : undefined;
         const formAction = button?.form?.action || ('form' in formControl ? formControl.form?.action : undefined);
         const kind = tagName === 'a' ? 'link' as const : ['input', 'textarea', 'select'].includes(tagName) ? 'field' as const : 'button' as const;
-        const stablePart = (label || href || tagName).replace(/\s+/g, ' ').slice(0, 80);
+        const hrefIdentity = pathIdentity(href);
+        const testId = normalize(node.getAttribute('data-testid') || node.getAttribute('data-test') || node.getAttribute('data-cy'), 100);
+        const identity = testId
+          ? `test=${testId}`
+          : node.id
+            ? `id=${normalize(node.id, 100)}`
+            : node.getAttribute('name')
+              ? `name=${normalize(node.getAttribute('name'), 100)}`
+              : node.getAttribute('aria-label')
+                ? `aria=${normalize(node.getAttribute('aria-label'), 100)}`
+                : hrefIdentity
+                  ? `href=${hrefIdentity}`
+                  : `label=${label || tagName}`;
+        const stableBase = `${kind}:${tagName}:${identity}:owner=${ownerIdentity(node)}`.slice(0, 360);
+        const occurrence = occurrences.get(stableBase) ?? 0;
+        occurrences.set(stableBase, occurrence + 1);
         return {
-          id: `${kind}:${locatorIndex}:${stablePart}`,
+          id: `${stableBase}:occurrence=${occurrence}`,
           kind,
           label,
           href,
@@ -254,19 +438,31 @@ export class BrowserExplorer {
           placeholder: node.getAttribute('placeholder') || undefined,
           autocomplete: node.getAttribute('autocomplete') || undefined,
         };
-      }),
-    );
+      });
+    });
   }
 
   private async probeField(page: Page, candidate: ExplorationCandidate, events: QaEvent[], actionNumber: number): Promise<boolean> {
     const locator = this.candidateLocator(page, candidate);
-    if (!(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) return false;
+    if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-after-state-change', 'candidate is no longer visible/enabled or no longer matches the current locator occupant');
+      events.push(this.event('action', page.url(), `Skip stale/unavailable field candidate: ${candidate.label || candidate.id}`, {
+        candidateId: candidate.id,
+        staleCandidate: true,
+        terminalGap: true,
+        gapReason: 'stale-after-state-change',
+      }));
+      return false;
+    }
 
     const strategy = this.inputStrategy.plan(candidate);
     if (strategy.action === 'skip') {
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'unsupported-control', strategy.reason);
       events.push(this.event('action', page.url(), `Skip unsupported field: ${candidate.label || candidate.id}`, {
         candidateId: candidate.id,
         reason: strategy.reason,
+        terminalGap: true,
+        gapReason: 'unsupported-control',
       }));
       return false;
     }
@@ -281,6 +477,7 @@ export class BrowserExplorer {
 
     if (strategy.action === 'fill') {
       const filled = await locator.fill(strategy.value, { timeout: 3_000 }).then(() => true).catch((error: unknown) => {
+        this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'execution-error', 'synthetic field fill failed');
         events.push(this.event('page-error', page.url(), `Synthetic field fill failed: ${String(error)}`, { candidateId: candidate.id }));
         return false;
       });
@@ -292,8 +489,12 @@ export class BrowserExplorer {
           .filter((option) => !option.disabled && option.value);
         return available[1]?.value ?? available[0]?.value ?? null;
       }).catch(() => null);
-      if (!option) return false;
+      if (!option) {
+        this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'unsupported-control', 'select has no safe enabled option');
+        return false;
+      }
       const selected = await locator.selectOption(option, { timeout: 3_000 }).then(() => true).catch((error: unknown) => {
+        this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'execution-error', 'synthetic select failed');
         events.push(this.event('page-error', page.url(), `Synthetic select failed: ${String(error)}`, { candidateId: candidate.id }));
         return false;
       });
@@ -312,24 +513,48 @@ export class BrowserExplorer {
     actionNumber: number,
   ): Promise<{ exercised: boolean; destination?: string }> {
     const locator = this.candidateLocator(page, candidate);
-    if (!(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
-      return { exercised: false };
-    }
-
-    const currentLabel = ((await locator.innerText().catch(() => '')) || await locator.getAttribute('aria-label').catch(() => '') || '').trim().slice(0, 120);
-    if (candidate.label && currentLabel && currentLabel !== candidate.label) {
-      events.push(this.event('action', page.url(), `Skip stale candidate: ${candidate.label}`, { candidateId: candidate.id }));
+    if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
+      this.coverage.markCandidateTerminal(this.normalizeUrl(page.url()), candidate.id, 'stale-after-state-change', 'candidate is no longer visible/enabled or no longer matches the current locator occupant');
+      events.push(this.event('action', page.url(), `Skip stale/unavailable button candidate: ${candidate.label || candidate.id}`, {
+        candidateId: candidate.id,
+        staleCandidate: true,
+        terminalGap: true,
+        gapReason: 'stale-after-state-change',
+      }));
       return { exercised: false };
     }
 
     const before = this.normalizeUrl(page.url());
+    const preflight = await clickabilityPreflight(locator);
+    if (!preflight.clickable) {
+      const reason = preflight.reason === 'pointer-intercepted'
+        ? 'pointer-intercepted'
+        : preflight.reason === 'not-rendered' || preflight.reason === 'outside-viewport'
+          ? 'not-visible'
+          : 'execution-error';
+      this.coverage.markCandidateTerminal(before, candidate.id, reason, preflight.detail ?? preflight.reason);
+      events.push(this.event('action', before, `Skip ${reason} button candidate: ${candidate.label || candidate.id}`, {
+        candidateId: candidate.id,
+        clickabilityPreflight: true,
+        preflightReason: preflight.reason,
+        preflightDetail: preflight.detail,
+        terminalGap: true,
+        gapReason: reason,
+      }));
+      return { exercised: false };
+    }
+
     events.push(this.event('action', before, `Click button: ${candidate.label || 'unnamed-button'}`, {
       candidateId: candidate.id,
       actionNumber,
+      clickabilityPreflight: true,
     }));
 
-    const clicked = await locator.click({ timeout: 3_000 }).then(() => true).catch((error: unknown) => {
-      events.push(this.event('page-error', before, `Button probe failed: ${String(error)}`, { candidateId: candidate.id }));
+    const clicked = await locator.click({ timeout: 1_500 }).then(() => true).catch((error: unknown) => {
+      const message = String(error);
+      const intercepted = /intercept|receives pointer events/i.test(message);
+      this.coverage.markCandidateTerminal(before, candidate.id, intercepted ? 'pointer-intercepted' : 'execution-error', intercepted ? 'click hit target was intercepted after preflight' : 'button probe failed after preflight');
+      events.push(this.event('page-error', before, `Button probe failed: ${message}`, { candidateId: candidate.id, clickabilityPreflight: true }));
       return false;
     });
     if (!clicked) return { exercised: false };
@@ -345,6 +570,29 @@ export class BrowserExplorer {
 
   private candidateLocator(page: Page, candidate: ExplorationCandidate): Locator {
     return page.locator(BrowserExplorer.candidateSelector).nth(candidate.locatorIndex);
+  }
+
+  private async candidateStillMatches(locator: Locator, candidate: ExplorationCandidate): Promise<boolean> {
+    return locator.evaluate((element, expected) => {
+      const node = element as HTMLElement;
+      if (node.tagName.toLowerCase() !== expected.tagName) return false;
+      if (expected.name && node.getAttribute('name') !== expected.name) return false;
+      if (expected.href && node instanceof HTMLAnchorElement && node.href !== expected.href) return false;
+      const formControl = node as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+      const associatedLabel = 'labels' in formControl
+        ? Array.from(formControl.labels ?? []).map((label) => label.innerText.trim()).filter(Boolean).join(' ')
+        : '';
+      const currentLabel = (
+        associatedLabel || node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('name') || node.getAttribute('title') || ''
+      ).trim().replace(/\s+/g, ' ').slice(0, 120);
+      if (expected.label && currentLabel && currentLabel !== expected.label) return false;
+      return true;
+    }, {
+      tagName: candidate.tagName,
+      name: candidate.name,
+      href: candidate.href,
+      label: candidate.label,
+    }).catch(() => false);
   }
 
   private async captureInteractionState(page: Page, candidate: ExplorationCandidate, events: QaEvent[], actionNumber: number): Promise<void> {
@@ -380,15 +628,28 @@ export class BrowserExplorer {
         return `${node.tagName.toLowerCase()}${id}${classes}${label ? ` "${label}"` : ''}`.slice(0, 180);
       };
 
-      const intentionallySuppressed = (element: Element): boolean => {
-        if (element.closest('[hidden],[inert],[aria-hidden="true"]')) return true;
-        let current: Element | null = element;
-        for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
-          const style = getComputedStyle(current as HTMLElement);
-          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0.01) return true;
-          if (depth > 0 && style.transform !== 'none') return true; // common closed drawer/off-canvas state
+      const isWithinCollapsedControlledRegion = (element: Element): boolean => {
+        const rect = (element as HTMLElement).getBoundingClientRect();
+        const horizontallyDisplaced = rect.right <= 0 || rect.left >= window.innerWidth;
+        if (!horizontallyDisplaced) return false;
+        const controls = Array.from(document.querySelectorAll<HTMLElement>('[aria-controls][aria-expanded="false"]'));
+        for (const control of controls) {
+          const controlledId = control.getAttribute('aria-controls');
+          if (!controlledId) continue;
+          const region = document.getElementById(controlledId);
+          if (region && (region === element || region.contains(element))) return true;
         }
         return false;
+      };
+
+      const intentionallySuppressed = (element: Element): boolean => {
+        if (element.closest('[hidden],[inert],[aria-hidden="true"],[data-state="closed"],[data-open="false"]')) return true;
+        let current: Element | null = element;
+        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+          const style = getComputedStyle(current as HTMLElement);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity || '1') <= 0.01) return true;
+        }
+        return isWithinCollapsedControlledRegion(element);
       };
 
       for (const el of Array.from(document.querySelectorAll('button, a[href], input, textarea, select')).slice(0, 250)) {
@@ -406,11 +667,17 @@ export class BrowserExplorer {
       }
       return problems.slice(0, 20);
     });
+    if (signals.length === 0) return;
+    const screenshot = await this.evidence.screenshot(page, `ui-signal-${++this.uiSignalCounter}`).catch(() => undefined);
+    const interactionStateId = await this.interactionStateId(page, page.url());
     for (const signal of signals) {
       events.push(this.event('ui', page.url(), signal.message, {
         browserUi: true,
         uiKind: signal.uiKind,
         element: signal.element,
+        screenshot,
+        screenshotUnavailableReason: screenshot ? undefined : 'Signal-time browser screenshot capture failed.',
+        interactionStateId,
       }));
     }
   }
@@ -439,4 +706,20 @@ export class BrowserExplorer {
   private event(kind: QaEvent['kind'], url: string, message: string, details?: Record<string, unknown>): QaEvent {
     return { timestamp: new Date().toISOString(), kind, url, message, details };
   }
+}
+
+function stateActionKey(url: string, stateId: string, candidateId: string): string {
+  return `${safePath(url)}|${stateId}|${candidateId}`;
+}
+
+function safePath(url: string): string {
+  try {
+    return new URL(url).pathname || '/';
+  } catch {
+    return url.split(/[?#]/, 1)[0] || '/';
+  }
+}
+
+function explorationUrl(visited: Set<string>, fallback: string): string {
+  return [...visited].at(-1) ?? fallback;
 }

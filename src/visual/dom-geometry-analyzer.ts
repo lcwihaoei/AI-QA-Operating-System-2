@@ -50,8 +50,7 @@ export function isActionablyOffscreen(rect: RectSnapshot, viewportWidth: number)
     || rect.x < -4
     || rect.x + rect.width > viewportWidth + 4;
   const aboveViewport = rect.y + rect.height <= 0;
-  // Deliberately do not treat y >= viewport height as a defect: normal long pages
-  // place reachable controls below the fold and users can scroll to them.
+  // Controls below the fold are normally reachable by vertical scrolling.
   return horizontallyImpossible || aboveViewport;
 }
 
@@ -95,6 +94,40 @@ export class DomGeometryAnalyzer {
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       };
 
+      const isHorizontallyDisplaced = (rect: BrowserRect): boolean => rect.width > 0 && (
+        rect.x + rect.width <= 0
+        || rect.x >= window.innerWidth
+        || rect.x < -4
+        || rect.x + rect.width > window.innerWidth + 4
+      );
+
+      // A common responsive pattern leaves a drawer/sidebar subtree mounted while a
+      // separate trigger advertises the closed state through aria-controls +
+      // aria-expanded=false. LeeEngUI real-project dogfood exposed that geometry from
+      // the tucked panel was being interpreted as a product defect. The controller
+      // relationship is stronger evidence than class-name guessing, so use it to
+      // suppress only descendants that are actually displaced outside the viewport.
+      // Visible icon rails inside the same controlled region remain analyzable.
+      const collapsedControlledIds = new Set<string>();
+      for (const controller of Array.from(document.querySelectorAll('[aria-controls][aria-expanded="false"]'))) {
+        const controls = (controller.getAttribute('aria-controls') || '').split(/\s+/).map((value) => value.trim()).filter(Boolean);
+        for (const id of controls) collapsedControlledIds.add(id);
+      }
+
+      const isInsideCollapsedControlledContent = (element: Element): boolean => {
+        if (collapsedControlledIds.size === 0) return false;
+        const path: HTMLElement[] = [];
+        let current: HTMLElement | null = element as HTMLElement;
+        while (current) {
+          path.push(current);
+          if (current.id && collapsedControlledIds.has(current.id)) {
+            return path.some((node) => isHorizontallyDisplaced(rectOf(node)));
+          }
+          current = current.parentElement;
+        }
+        return false;
+      };
+
       const isVisuallyHiddenClass = (node: HTMLElement): boolean => node.classList.contains('visually-hidden')
         || node.classList.contains('sr-only')
         || node.classList.contains('screen-reader-text');
@@ -109,6 +142,7 @@ export class DomGeometryAnalyzer {
       };
 
       const isSuppressedByDesign = (element: Element): boolean => {
+        if (isInsideCollapsedControlledContent(element)) return true;
         let current: HTMLElement | null = element as HTMLElement;
         while (current) {
           if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.hasAttribute('inert')) return true;
@@ -137,10 +171,7 @@ export class DomGeometryAnalyzer {
       };
 
       const offscreenState = (rect: BrowserRect): { horizontallyImpossible: boolean; aboveViewport: boolean } => ({
-        horizontallyImpossible: rect.x + rect.width <= 0
-          || rect.x >= window.innerWidth
-          || rect.x < -4
-          || rect.x + rect.width > window.innerWidth + 4,
+        horizontallyImpossible: isHorizontallyDisplaced(rect),
         aboveViewport: rect.y + rect.height <= 0,
       });
 

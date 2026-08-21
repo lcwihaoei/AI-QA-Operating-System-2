@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { QaRunResult, Severity } from '../core/types.js';
+import type { PlannerExecutionOutcome, QaRunResult, Severity } from '../core/types.js';
 
 export type ControlJobStatus = 'queued' | 'leased' | 'completed' | 'failed';
 export type WorkerStatus = 'online' | 'busy' | 'offline';
@@ -11,6 +11,17 @@ export interface ControlRunRecord {
   startedAt: string;
   finishedAt: string;
   coverageScore: number;
+  pageCoverage?: number;
+  rawInteractionCoverage?: number;
+  eligibleInteractionCoverage?: number;
+  unexplainedEligibleGaps?: number;
+  plannerStatus?: PlannerExecutionOutcome;
+  plannerPagesModelUsed?: number;
+  plannerPagesAttempted?: number;
+  plannerFallbackPages?: number;
+  uxReasonerOutcome?: string;
+  findingClusters?: number;
+  rawFindings?: number;
   uxScore?: number;
   uxOpportunities?: number;
   findings: Record<Severity, number>;
@@ -65,9 +76,28 @@ export class ControlPlaneStore {
   async recordRun(result: QaRunResult): Promise<ControlRunRecord> {
     const document = await this.load();
     const record: ControlRunRecord = {
-      runId: safeString(result.runId, 200), startedAt: result.startedAt, finishedAt: result.finishedAt, coverageScore: result.coverage.score,
-      uxScore: result.ux?.score, uxOpportunities: result.ux?.opportunities, findings: counts(result), visited: result.visitedUrls.length,
-      browserActions: result.actions, deviceActions: result.device.actions, outputDir: safeString(result.outputDir, 1_000),
+      runId: safeString(result.runId, 200),
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt,
+      coverageScore: result.coverage.score,
+      pageCoverage: result.coverage.pageCoverage,
+      rawInteractionCoverage: result.coverage.rawInteractionCoverage ?? result.coverage.interactionCoverage,
+      eligibleInteractionCoverage: result.coverage.eligibleInteractionCoverage ?? result.coverage.interactionCoverage,
+      unexplainedEligibleGaps: result.coverage.unexplainedEligibleGaps ?? 0,
+      plannerStatus: result.planner?.status,
+      plannerPagesModelUsed: result.planner?.pagesModelUsed,
+      plannerPagesAttempted: result.planner?.pagesAttempted,
+      plannerFallbackPages: result.planner?.pagesFallback,
+      uxReasonerOutcome: result.ux?.reasonerStatus?.outcome,
+      findingClusters: result.findingClusters?.clusters,
+      rawFindings: result.findings.length,
+      uxScore: result.ux?.score,
+      uxOpportunities: result.ux?.opportunities,
+      findings: counts(result),
+      visited: result.visitedUrls.length,
+      browserActions: result.actions,
+      deviceActions: result.device.actions,
+      outputDir: safeString(result.outputDir, 1_000),
     };
     document.runs = [...document.runs.filter((item) => item.runId !== record.runId), record];
     await this.save(document); return record;

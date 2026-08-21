@@ -33,7 +33,9 @@ function confirmedAnswers(session: ReturnType<typeof buildFeaturePlanningSession
         ? [question.options![0]!]
         : question.kind === 'single'
           ? question.options![0]!
-          : 'Make approval scope and expected outcome clear before execution.',
+          : question.id === 'failure-rollback-contract'
+            ? 'Keep the reviewed plan unchanged, surface the failure, and return to the last confirmed state.'
+            : 'Make approval scope and expected outcome clear before execution.',
     confirmed: true,
   }));
 }
@@ -51,6 +53,24 @@ describe('product feature planner', () => {
     expect(validateFeaturePlanningAnswers(session, unconfirmed)).toMatchObject({ ready: false, unconfirmed: ['feature-goal-confirmation'] });
   });
 
+  it('proactively challenges duplicate architecture and omitted cross-surface/failure-state requirements', () => {
+    const session = buildFeaturePlanningSession({
+      project: 'demo',
+      opportunity: opportunity(),
+      currentProductUnderstanding: ['Existing shared approval domain service', 'Responsive bilingual management dashboard'],
+    });
+    expect(session.architectureReview?.requiresExplicitSelection).toBe(true);
+    expect(session.architectureReview?.architectureSignals).toContain('Existing shared approval domain service');
+    expect(session.architectureReview?.challenges.some((item) => item.includes('parallel subsystem'))).toBe(true);
+    expect(session.architectureReview?.omittedConstraintPrompts.some((item) => item.includes('mobile/responsive'))).toBe(true);
+    expect(session.questions.map((item) => item.id)).toEqual(expect.arrayContaining([
+      'existing-capability-reuse',
+      'cross-surface-impact',
+      'failure-rollback-contract',
+    ]));
+    expect(session.alternatives.map((item) => item.id)).toEqual(['minimal', 'balanced', 'platform']);
+  });
+
   it('builds a safe dependency-ordered full-stack feature work plan without enabling source mutation', () => {
     const session = buildFeaturePlanningSession({ project: 'demo', opportunity: opportunity(), currentProductUnderstanding: ['Existing dashboard shell', 'Beta.7 evidence gate'] });
     const blueprint = buildFeatureBlueprint({
@@ -66,6 +86,7 @@ describe('product feature planner', () => {
     });
 
     expect(blueprint.selectedAlternative.id).toBe('balanced');
+    expect(blueprint.architectureReview).toEqual(session.architectureReview);
     expect(blueprint.workPlan.items.map((item) => item.kind)).toEqual(['feature', 'frontend', 'backend', 'qa']);
     expect(blueprint.workPlan.items.every((item) => item.execution.mutationAllowed === false)).toBe(true);
     expect(blueprint.workPlan.items.every((item) => item.approval.approved === false)).toBe(true);

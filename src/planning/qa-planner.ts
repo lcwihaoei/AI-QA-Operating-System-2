@@ -1,3 +1,4 @@
+import { assertModelExecutionStatus, type ModelExecutionStatus } from '../contracts/quality-contracts.js';
 import type { ExplorationCandidate, PlannedCandidate, RiskMode } from '../core/types.js';
 import { CoverageGraph } from './coverage-graph.js';
 import { HumanLikePolicy } from './human-like-policy.js';
@@ -19,6 +20,7 @@ export class QaPlanner {
     candidates: ExplorationCandidate[],
     riskMode: RiskMode,
     pageState?: PageStateSnapshot,
+    interactionStateId?: string,
   ): Promise<PlannerRankingResult> {
     const effectiveState: PageStateSnapshot = pageState ?? {
       url: pageUrl,
@@ -43,7 +45,7 @@ export class QaPlanner {
         ...policyDecision,
         reasons: [...policyDecision.reasons, ...scenarioScore.reasons],
       };
-      this.coverage.discoverCandidate(pageUrl, candidate, decision.risk, decision.allowed);
+      this.coverage.discoverCandidate(pageUrl, candidate, decision.risk, decision.allowed, interactionStateId);
 
       let score = decision.interestScore + scenarioScore.boost;
       if (!this.coverage.wasCandidateExercised(pageUrl, candidate.id)) score += 30;
@@ -55,9 +57,27 @@ export class QaPlanner {
       return { candidate, decision, score } satisfies PlannedCandidate;
     });
 
-    let modelError: string | undefined;
-    let modelUsed = false;
-    if (this.model && plans.length > 0) {
+    let modelStatus: ModelExecutionStatus;
+    if (!this.model) {
+      modelStatus = {
+        configured: false,
+        attempted: false,
+        used: false,
+        repairAttempted: false,
+        fallbackUsed: false,
+        outcome: 'not-configured',
+      };
+    } else if (plans.length === 0) {
+      modelStatus = {
+        configured: true,
+        attempted: false,
+        used: false,
+        repairAttempted: false,
+        fallbackUsed: false,
+        outcome: 'skipped',
+        skipReason: 'no planner candidates were available for model ranking',
+      };
+    } else {
       const context: PlannerModelContext = {
         pageUrl,
         depth,
@@ -79,6 +99,7 @@ export class QaPlanner {
 
       try {
         const recommendations = await this.model.recommend(context);
+        const metadata = this.model.getLastExecutionMetadata?.();
         const byId = new Map(recommendations.map((recommendation) => [recommendation.candidateId, recommendation]));
         for (const plan of plans) {
           if (!plan.decision.allowed) continue;
@@ -93,17 +114,44 @@ export class QaPlanner {
             };
           }
         }
-        modelUsed = true;
+        const repaired = metadata?.repairAttempted === true;
+        modelStatus = {
+          configured: true,
+          attempted: true,
+          used: true,
+          repairAttempted: repaired,
+          fallbackUsed: false,
+          outcome: repaired ? 'repaired-and-used' : 'used',
+          provider: metadata?.provider,
+        };
       } catch (error: unknown) {
-        modelError = String(error);
+        const metadata = this.model.getLastExecutionMetadata?.();
+        modelStatus = {
+          configured: true,
+          attempted: true,
+          used: false,
+          repairAttempted: metadata?.repairAttempted === true,
+          fallbackUsed: true,
+          outcome: 'fallback',
+          provider: metadata?.provider,
+          error: String(error),
+        };
       }
     }
+
+    assertModelExecutionStatus(modelStatus);
 
     plans.sort((a, b) => {
       if (a.decision.allowed !== b.decision.allowed) return a.decision.allowed ? -1 : 1;
       return b.score - a.score || a.candidate.locatorIndex - b.candidate.locatorIndex;
     });
 
-    return { plans, scenarios, modelUsed, modelError };
+    return {
+      plans,
+      scenarios,
+      modelStatus,
+      modelUsed: modelStatus.used,
+      modelError: modelStatus.error,
+    };
   }
 }

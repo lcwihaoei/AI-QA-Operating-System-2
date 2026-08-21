@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Repository safety scan
         shell: bash
@@ -37,10 +38,29 @@ jobs:
           done < <(git ls-files -z)
           test "$bad" -eq 0
 
-      - run: npm install --no-audit --no-fund
+      - name: Reproducible dependency install
+        run: npm ci --no-audit --no-fund
 
       - name: Dependency vulnerability gate
-        run: npm audit --audit-level=high
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            set +e
+            output="$(npm audit --audit-level=high 2>&1)"
+            code=$?
+            set -e
+            printf '%s\n' "$output"
+            if [ "$code" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ] && printf '%s\n' "$output" | grep -Eqi '(audit endpoint returned an error|50[234] Service|ECONNRESET|ETIMEDOUT|EAI_AGAIN)'; then
+              echo "npm audit transport failure; retrying ($attempt/3)..." >&2
+              sleep $((attempt * 2))
+              continue
+            fi
+            exit "$code"
+          done
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
@@ -50,5 +70,202 @@ jobs:
         env:
           AIQA_BROWSER_E2E: '1'
 
+      - name: Verify lockfile stays synchronized
+        run: git diff --exit-code -- package-lock.json
+
       - name: Verify package contents
         run: npm pack --dry-run
+
+  leeengui-dogfood:
+    if: github.event_name == 'pull_request' && github.head_ref == 'feature/v0.10.0-beta.10-real-project-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LEEENG_BASELINE_SHA: 62b0f430eaf39d2ad1834ebdab89b6718957b0fc
+    steps:
+      - name: Checkout exact Beta.10 candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: aiqa
+
+      - name: Check private LeeEngUI access configuration
+        id: private_access
+        shell: bash
+        env:
+          LEEENGUI_READ_TOKEN: ${{ secrets.LEEENGUI_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dogfood
+          if [ -n "${LEEENGUI_READ_TOKEN:-}" ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'Private LeeEngUI dogfood token configured.' > dogfood/private-access-status.txt
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            {
+              echo 'BETA10_PRIVATE_DOGFOOD_BLOCKED'
+              echo 'Reason: repository secret LEEENGUI_READ_TOKEN is not configured.'
+              echo 'Required scope: read-only access to lcwihaoei/LeeEngUI.'
+              echo 'This does not make deterministic public CI fail, but Beta.10 release acceptance remains blocked until a real private-project dogfood run succeeds.'
+            } | tee dogfood/private-access-status.txt
+            echo '::warning::LeeEngUI private dogfood skipped because LEEENGUI_READ_TOKEN is not configured. Beta.10 release acceptance remains blocked.'
+          fi
+
+      - name: Checkout pinned LeeEngUI baseline
+        if: steps.private_access.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: lcwihaoei/LeeEngUI
+          ref: ${{ env.LEEENG_BASELINE_SHA }}
+          path: leeeng
+          token: ${{ secrets.LEEENGUI_READ_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        if: steps.private_access.outputs.configured == 'true'
+        with:
+          node-version: 22
+
+      - name: Record exact reproducibility metadata
+        if: steps.private_access.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dogfood/baseline dogfood/.qa-runs
+          AIQA_SHA="$(git -C aiqa rev-parse HEAD)"
+          test "$AIQA_SHA" = "${{ github.event.pull_request.head.sha }}"
+          {
+            echo "AIQA_SHA=$AIQA_SHA"
+            echo "AIQA_VERSION=$(node -p "require('./aiqa/package.json').version")"
+            echo "LEEENG_SHA=$(git -C leeeng rev-parse HEAD)"
+            echo "NODE=$(node --version)"
+            echo "NPM=$(npm --version)"
+            echo "OS=$(uname -a)"
+          } | tee dogfood/environment.txt
+          test "$(git -C leeeng rev-parse HEAD)" = "$LEEENG_BASELINE_SHA"
+
+      - name: Install both projects from committed lockfiles
+        if: steps.private_access.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd aiqa && npm ci --no-audit --no-fund)
+          (cd leeeng && npm ci --no-audit --no-fund)
+
+      - name: Install real Chromium runtimes
+        if: steps.private_access.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd aiqa && npx playwright install --with-deps chromium)
+          (cd leeeng && npx playwright install chromium)
+
+      - name: Capture LeeEngUI pre-existing strict baseline
+        if: steps.private_access.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set +e
+          cd leeeng
+          npm run verify:strict 2>&1 | tee ../dogfood/baseline/verify-strict.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > ../dogfood/baseline/verify-strict-exit-code.txt
+          echo "LeeEngUI baseline exit code: $code"
+          exit 0
+
+      - name: Run Beta.10 against pinned real LeeEngUI
+        if: steps.private_access.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dogfood/routes.txt <<'ROUTES'
+          /
+          /component-test
+          /system-status
+          /not-found
+          /fallback-unknown-route
+          ROUTES
+
+          (
+            cd leeeng
+            npm run dev -- --host 127.0.0.1 > ../dogfood/vite.log 2>&1 &
+            echo $! > ../dogfood/vite.pid
+          )
+          cleanup() {
+            if [ -f dogfood/vite.pid ]; then kill "$(cat dogfood/vite.pid)" >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5173/ >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+          set +e
+          cd aiqa
+          npm run qa -- \
+            --url http://127.0.0.1:5173 \
+            --routes-file "$GITHUB_WORKSPACE/dogfood/routes.txt" \
+            --risk-mode safe \
+            --api-mode off \
+            --device-mode off \
+            --visual-viewports desktop,tablet,mobile \
+            --record-video \
+            --max-actions 300 \
+            --max-depth 8 \
+            --max-candidates-per-page 30 \
+            --no-github-plan \
+            --no-ux-intelligence \
+            --output "$GITHUB_WORKSPACE/dogfood/.qa-runs" \
+            2>&1 | tee "$GITHUB_WORKSPACE/dogfood/qa-output.log"
+          qa_code=${PIPESTATUS[0]}
+          echo "$qa_code" > "$GITHUB_WORKSPACE/dogfood/qa-exit-code.txt"
+          cd "$GITHUB_WORKSPACE"
+          set -e
+          if [ "$qa_code" -ne 0 ] && [ "$qa_code" -ne 2 ]; then
+            echo "AI-QA execution crashed with exit code $qa_code" >&2
+            exit "$qa_code"
+          fi
+
+      - name: Evaluate Beta.10 real-project acceptance contract
+        if: steps.private_access.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="$(find dogfood/.qa-runs -type f -name result.json | sort | tail -n 1)"
+          test -n "$RESULT"
+          RESULT="$(realpath "$RESULT")"
+          REPORT_DATA="$(RESULT="$RESULT" node -e "const r=require(process.env.RESULT); if(!r.report?.dataPath) process.exit(2); process.stdout.write(r.report.dataPath)")"
+          test -f "$REPORT_DATA"
+          AIQA_SHA="$(git -C aiqa rev-parse HEAD)"
+          AIQA_VERSION="$(node -p "require('./aiqa/package.json').version")"
+
+          set +e
+          (
+            cd aiqa
+            npm run --silent dogfood:verify -- \
+              --result "$RESULT" \
+              --report-data "$REPORT_DATA" \
+              --required-route / /component-test /system-status /not-found /fallback-unknown-route \
+              --require-route-manifest-evidence \
+              --min-eligible-coverage 80 \
+              --min-videos 3 \
+              --candidate-sha "$AIQA_SHA" \
+              --expected-candidate-sha "${{ github.event.pull_request.head.sha }}"
+          ) | tee dogfood/beta10-dogfood-verification.json
+          verifier_code=${PIPESTATUS[0]}
+          set -e
+          if [ "$verifier_code" -ne 0 ]; then
+            echo "Beta.10 dogfood verifier did not PASS (exit=$verifier_code)." >&2
+            exit "$verifier_code"
+          fi
+          printf '%s\n' "$AIQA_VERSION" > dogfood/candidate-version.txt
+
+      - name: Upload real-project dogfood evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta10-leeengui-dogfood-${{ github.sha }}
+          path: dogfood
+          if-no-files-found: error
+          retention-days: 14

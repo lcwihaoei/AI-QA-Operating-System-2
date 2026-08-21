@@ -25,7 +25,7 @@ describe('selectExplorationPlans', () => {
       plan('field', 31, 19),
     ];
     const selected = selectExplorationPlans(plans, 12);
-    expect(selected.navigation.length).toBeGreaterThanOrEqual(8);
+    expect(selected.navigation.length).toBeGreaterThanOrEqual(6);
     expect(selected.interactions.length).toBeGreaterThanOrEqual(1);
     expect(selected.interactions.some((item) => item.candidate.kind === 'button')).toBe(true);
   });
@@ -57,6 +57,29 @@ describe('selectExplorationPlans', () => {
       'http://example.test/vocabulary',
       'http://example.test/practice',
     ]);
+  });
+
+  it('allows more than three safe interactions when budget and route breadth allow it', () => {
+    const plans = [
+      ...Array.from({ length: 12 }, (_, index) => plan('button', index, 200 - index)),
+      plan('link', 40, 50, 'http://example.test/settings'),
+      plan('link', 41, 49, 'http://example.test/learning'),
+    ];
+    const selected = selectExplorationPlans(plans, 10, { remainingActions: 10, routeBreadthPressure: 2 });
+    expect(selected.navigation).toHaveLength(2);
+    expect(selected.interactions.length).toBeGreaterThan(3);
+    expect(selected.navigation.length + selected.interactions.length).toBeLessThanOrEqual(10);
+  });
+
+  it('never reserves more work than the remaining global action budget', () => {
+    const plans = [
+      ...Array.from({ length: 10 }, (_, index) => plan('button', index, 100 - index)),
+      ...Array.from({ length: 10 }, (_, index) => plan('link', index + 20, 80 - index)),
+    ];
+    const selected = selectExplorationPlans(plans, 12, { remainingActions: 4 });
+    expect(selected.navigation.length + selected.interactions.length).toBeLessThanOrEqual(4);
+    expect(selected.navigation.length).toBeGreaterThanOrEqual(1);
+    expect(selected.interactions.length).toBeGreaterThanOrEqual(1);
   });
 
   it('never selects blocked candidates', () => {

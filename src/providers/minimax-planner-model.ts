@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import type { PlannerModel, PlannerModelContext, PlannerModelRecommendation } from '../planning/planner-model.js';
+import type {
+  PlannerModel,
+  PlannerModelContext,
+  PlannerModelExecutionMetadata,
+  PlannerModelRecommendation,
+} from '../planning/planner-model.js';
 import { MiniMaxChatClient } from './minimax-chat-client.js';
 
 const responseSchema = z.object({
@@ -35,6 +40,15 @@ export class MiniMaxPlannerModel implements PlannerModel {
 
   constructor(apiKey: string, model = 'minimax-m3', baseUrl = 'https://api.minimaxi.com/v1') {
     this.client = new MiniMaxChatClient(apiKey, model, baseUrl);
+  }
+
+  getLastExecutionMetadata(): PlannerModelExecutionMetadata | undefined {
+    const stats = this.client.getLastCallStats();
+    if (!stats) return undefined;
+    return {
+      provider: `minimax:${stats.model}`,
+      repairAttempted: stats.schemaRepairAttempts > 0,
+    };
   }
 
   async recommend(context: PlannerModelContext): Promise<PlannerModelRecommendation[]> {

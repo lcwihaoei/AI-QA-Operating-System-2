@@ -12,6 +12,7 @@
     "fix": "tsx src/fix-cli.ts",
     "dashboard": "tsx src/control-cli.ts",
     "ux:experiment": "tsx src/ux-experiment-cli.ts",
+    "dogfood:verify": "tsx src/dogfood-verifier-cli.ts",
     "test": "vitest run",
     "check": "npm run build && npm test"
   },

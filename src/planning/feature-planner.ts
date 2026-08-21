@@ -26,6 +26,15 @@ export interface FeatureAlternative {
   securityConsiderations: string[];
 }
 
+export interface ProductArchitectureReview {
+  recommendedAlternativeId: 'minimal' | 'balanced' | 'platform';
+  recommendationReason: string;
+  architectureSignals: string[];
+  challenges: string[];
+  omittedConstraintPrompts: string[];
+  requiresExplicitSelection: true;
+}
+
 export interface FeaturePlanningQuestion {
   id: string;
   prompt: string;
@@ -47,6 +56,7 @@ export interface FeaturePlanningSession {
   project: string;
   opportunity: ProductOpportunity;
   currentProductUnderstanding: string[];
+  architectureReview?: ProductArchitectureReview;
   questions: FeaturePlanningQuestion[];
   alternatives: FeatureAlternative[];
   selectedAlternativeId?: string;
@@ -59,6 +69,7 @@ export interface FeatureBlueprint {
   project: string;
   opportunityId: string;
   selectedAlternative: FeatureAlternative;
+  architectureReview?: ProductArchitectureReview;
   userFlow: string[];
   informationArchitecture: string[];
   frontendRequirements: string[];
@@ -75,6 +86,48 @@ export interface FeatureBlueprint {
 
 function validConfidence(value: number): boolean { return Number.isFinite(value) && value >= 0 && value <= 1; }
 
+function architectureReview(
+  opportunity: ProductOpportunity,
+  currentProductUnderstanding: string[],
+): ProductArchitectureReview {
+  const signals = [...new Set(currentProductUnderstanding.map((value) => value.trim()).filter(Boolean))].slice(0, 20);
+  const corpus = `${signals.join(' ')} ${opportunity.affectedAreas.join(' ')}`.toLowerCase();
+  const platformSignal = /platform|shared|reusable|common|domain|multi[- ]?(tenant|module)|cross[- ]?(module|product)/.test(corpus);
+  const recommendedAlternativeId: ProductArchitectureReview['recommendedAlternativeId'] = platformSignal && opportunity.estimatedEffort !== 'low'
+    ? 'platform'
+    : opportunity.estimatedEffort === 'low'
+      ? 'minimal'
+      : 'balanced';
+
+  const recommendationReason = recommendedAlternativeId === 'platform'
+    ? 'Existing architecture signals suggest this capability may have multiple consumers; review a reusable domain boundary before duplicating feature-specific infrastructure.'
+    : recommendedAlternativeId === 'minimal'
+      ? 'The requested outcome appears suitable for a small integrated slice; prefer proving user value before creating a broader platform abstraction.'
+      : 'The request has meaningful product impact without clear evidence that a platform abstraction is already justified; prefer a complete primary flow with bounded extension points.';
+
+  const challenges = [
+    'Reuse or extend an existing domain/service/state owner before creating a parallel subsystem with overlapping responsibility.',
+    'Do not introduce a new table, store, service or API merely because the requested solution names one; first verify that the current model cannot represent the outcome safely.',
+    'Treat mobile/responsive, keyboard/accessibility, empty/loading/error, permissions and rollback behavior as part of the feature contract rather than post-implementation QA details.',
+    ...(signals.length > 0 ? [`Cross-check the requested design against existing product signals: ${signals.slice(0, 5).join(' · ')}`] : []),
+  ];
+
+  return {
+    recommendedAlternativeId,
+    recommendationReason,
+    architectureSignals: signals,
+    challenges,
+    omittedConstraintPrompts: [
+      'Which existing capability already owns the same data, state or workflow responsibility?',
+      'What changes for mobile/responsive and keyboard/assistive-technology users?',
+      'What is the failure, cancellation and rollback behavior?',
+      'Does the feature require new persistence/migration, or can the existing domain model represent it?',
+      'Which permissions, roles or tenant boundaries must remain true?',
+    ],
+    requiresExplicitSelection: true,
+  };
+}
+
 export function buildFeaturePlanningSession(input: {
   project: string;
   opportunity: ProductOpportunity;
@@ -85,6 +138,7 @@ export function buildFeaturePlanningSession(input: {
   if (!validConfidence(input.opportunity.confidence)) throw new Error('opportunity confidence must be between 0 and 1');
   if (input.opportunity.evidence.length === 0) throw new Error('feature planning requires at least one evidence reference');
 
+  const review = architectureReview(input.opportunity, input.currentProductUnderstanding);
   const questions: FeaturePlanningQuestion[] = [
     { id: 'feature-goal-confirmation', prompt: 'Confirm the user outcome this feature must improve.', reason: 'Prevents implementation from optimizing an inferred goal that the user did not request.', required: true, kind: 'text' },
     { id: 'target-users', prompt: 'Who should be able to use this feature?', reason: 'Defines product scope, permissions and QA personas.', required: true, kind: 'multi', options: ['All users', 'Authenticated users', 'Admin/owner only', 'Role-based subset', 'Other'] },
@@ -92,6 +146,9 @@ export function buildFeaturePlanningSession(input: {
     { id: 'design-system-boundary', prompt: 'Confirm that new UI must reuse the current product design system unless an explicit redesign is approved.', reason: 'Prevents a generated feature from inventing an unrelated visual language.', required: true, kind: 'boolean' },
     { id: 'data-sensitivity', prompt: 'What data classification will the new feature process?', reason: 'Determines storage, logging, authorization and retention requirements.', required: true, kind: 'multi', options: ['Public', 'Internal', 'Personal data', 'Sensitive personal data', 'Credentials/tokens', 'Payment/financial', 'None', 'Other'] },
     { id: 'release-strategy', prompt: 'Choose a release strategy.', reason: 'Controls risk and how Beta.7 validates the feature.', required: true, kind: 'single', options: ['Feature flag / staged rollout', 'Owner-only preview', 'All users after QA', 'Other'] },
+    { id: 'existing-capability-reuse', prompt: 'Has the team explicitly checked whether an existing domain/service/state owner can satisfy this outcome before adding a parallel subsystem?', reason: 'Prevents duplicated architecture and keeps the new feature inside the existing system ownership model.', required: true, kind: 'boolean' },
+    { id: 'cross-surface-impact', prompt: 'Which additional product surfaces must the design explicitly cover?', reason: 'Surfaces omitted requirements before implementation rather than discovering them as QA regressions.', required: true, kind: 'multi', options: ['Desktop', 'Mobile/responsive', 'Keyboard/assistive technology', 'API/backend', 'Data migration', 'No additional surface', 'Other'] },
+    { id: 'failure-rollback-contract', prompt: 'Describe expected cancellation, failure and rollback behavior for the primary workflow.', reason: 'A happy-path-only blueprint is not sufficient for implementation or QA.', required: true, kind: 'text' },
   ];
 
   const alternatives: FeatureAlternative[] = [
@@ -118,6 +175,7 @@ export function buildFeaturePlanningSession(input: {
     project: input.project.trim(),
     opportunity: input.opportunity,
     currentProductUnderstanding: [...new Set(input.currentProductUnderstanding.map((value) => value.trim()).filter(Boolean))].slice(0, 500),
+    architectureReview: review,
     questions,
     alternatives,
     generationBlockedUntil: questions.filter((question) => question.required).map((question) => question.id),
@@ -185,6 +243,7 @@ export function buildFeatureBlueprint(input: {
 
   return {
     schemaVersion: 1, generatedAt: new Date().toISOString(), project: input.session.project, opportunityId: opportunity.id, selectedAlternative,
+    architectureReview: input.session.architectureReview,
     userFlow: input.userFlow, informationArchitecture: input.informationArchitecture, frontendRequirements: input.frontendRequirements,
     backendRequirements: input.backendRequirements, dataRequirements: input.dataRequirements, securityRequirements: input.securityRequirements,
     accessibilityRequirements: ['Keyboard-accessible interaction', 'Discoverable accessible names', 'Focus/state changes are programmatically exposed'],
