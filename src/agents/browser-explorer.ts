@@ -41,6 +41,7 @@ export class BrowserExplorer {
     let storageState: BrowserStorageState | undefined;
     const events: QaEvent[] = [];
     const visited = new Set<string>();
+    const queuedUrls = new Set<string>();
     const uxSnapshots = new Map<string, UxPageSnapshot>();
     const startUrl = this.normalizeUrl(options.url);
     const origin = new URL(startUrl).origin;
@@ -56,6 +57,8 @@ export class BrowserExplorer {
       { url: startUrl, depth: 0 },
       ...routeSeeds.map((url) => ({ url, depth: 0, seed: 'route-manifest' as const })),
     ];
+    queuedUrls.add(startUrl);
+    for (const seed of routeSeeds) queuedUrls.add(seed);
     let actions = 0;
 
     this.coverage.discoverPage(startUrl, 0);
@@ -78,6 +81,7 @@ export class BrowserExplorer {
 
       while (queued.length && actions < options.maxActions) {
         const item = queued.shift()!;
+        queuedUrls.delete(item.url);
         if (visited.has(item.url) || item.depth > options.maxDepth) continue;
         if (options.sameOriginOnly && new URL(item.url).origin !== origin) continue;
 
@@ -115,98 +119,138 @@ export class BrowserExplorer {
           }));
         }
 
-        const candidates = await this.collectCandidates(page);
-        const pageState = await this.pageStateAnalyzer.analyze(page);
-        const ranking = await this.planner.rank(actualUrl, item.depth, candidates, options.riskMode, pageState);
-        const plans = ranking.plans;
-        const allowedPlans = plans.filter((plan) => plan.decision.allowed);
-        const blockedPlans = plans.filter((plan) => !plan.decision.allowed);
-        const selected = selectExplorationPlans(plans, options.maxCandidatesPerPage);
-        events.push(this.event('planner', actualUrl, `Planner ranked ${plans.length} candidates`, {
-          allowed: allowedPlans.length,
-          blocked: blockedPlans.length,
-          selectedNavigation: selected.navigation.length,
-          selectedInteractions: selected.interactions.length,
-          modelStatus: ranking.modelStatus,
-          modelUsed: ranking.modelUsed,
-          modelError: ranking.modelError,
-          archetypes: pageState.archetypes,
-          scenarios: ranking.scenarios.map((scenario) => ({ id: scenario.id, label: scenario.label, priority: scenario.priority })),
-          pageSignals: {
-            title: pageState.title,
-            forms: pageState.formCount,
-            fields: pageState.fieldCount,
-            searchFields: pageState.searchFieldCount,
-            dialogs: pageState.hasDialog,
-            tables: pageState.hasTable,
-          },
-          top: allowedPlans.slice(0, 8).map((plan) => ({
-            id: plan.candidate.id,
-            label: plan.candidate.label,
-            kind: plan.candidate.kind,
-            score: plan.score,
-            risk: plan.decision.risk,
-            reasons: plan.decision.reasons,
-          })),
-          blockedExamples: blockedPlans.slice(0, 5).map((plan) => ({
-            label: plan.candidate.label,
-            kind: plan.candidate.kind,
-            reasons: plan.decision.reasons,
-          })),
-        }));
+        const maxInteractionRounds = Math.max(1, Math.min(12, options.maxCandidatesPerPage));
+        let interactionRound = 0;
+        let shouldReplan = true;
 
-        // First enqueue several safe links so breadth is preserved even when a
-        // single route/interaction family dominates planner ranking.
-        for (const plan of selected.navigation) {
-          const candidate = plan.candidate;
-          if (!candidate.href) continue;
-          const next = this.normalizeNavigableUrl(candidate.href, actualUrl);
-          if (!next) continue;
-          if (options.sameOriginOnly && new URL(next).origin !== origin) continue;
-          if (!visited.has(next) && item.depth < options.maxDepth) {
-            this.coverage.discoverPage(next, item.depth + 1);
-            queued.push({
-              url: next,
-              depth: item.depth + 1,
-              source: { pageUrl: actualUrl, candidateId: candidate.id },
-            });
+        while (shouldReplan && actions < options.maxActions && interactionRound < maxInteractionRounds) {
+          interactionRound += 1;
+          shouldReplan = false;
+
+          const candidates = await this.collectCandidates(page);
+          const pageState = await this.pageStateAnalyzer.analyze(page);
+          const ranking = await this.planner.rank(actualUrl, item.depth, candidates, options.riskMode, pageState);
+          const plans = ranking.plans;
+          const allowedPlans = plans.filter((plan) => plan.decision.allowed);
+          const blockedPlans = plans.filter((plan) => !plan.decision.allowed);
+          const selectablePlans = plans.filter((plan) =>
+            plan.candidate.kind === 'link' || !this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id));
+          const selected = selectExplorationPlans(selectablePlans, options.maxCandidatesPerPage);
+
+          events.push(this.event('planner', actualUrl, `Planner ranked ${plans.length} candidates`, {
+            interactionRound,
+            allowed: allowedPlans.length,
+            blocked: blockedPlans.length,
+            selectedNavigation: selected.navigation.length,
+            selectedInteractions: selected.interactions.length,
+            previouslyExercisedInteractions: plans.filter((plan) =>
+              plan.candidate.kind !== 'link' && this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)).length,
+            modelStatus: ranking.modelStatus,
+            modelUsed: ranking.modelUsed,
+            modelError: ranking.modelError,
+            archetypes: pageState.archetypes,
+            scenarios: ranking.scenarios.map((scenario) => ({ id: scenario.id, label: scenario.label, priority: scenario.priority })),
+            pageSignals: {
+              title: pageState.title,
+              forms: pageState.formCount,
+              fields: pageState.fieldCount,
+              searchFields: pageState.searchFieldCount,
+              dialogs: pageState.hasDialog,
+              tables: pageState.hasTable,
+            },
+            top: allowedPlans.slice(0, 8).map((plan) => ({
+              id: plan.candidate.id,
+              label: plan.candidate.label,
+              kind: plan.candidate.kind,
+              score: plan.score,
+              risk: plan.decision.risk,
+              reasons: plan.decision.reasons,
+            })),
+            blockedExamples: blockedPlans.slice(0, 5).map((plan) => ({
+              label: plan.candidate.label,
+              kind: plan.candidate.kind,
+              reasons: plan.decision.reasons,
+            })),
+          }));
+
+          for (const plan of selected.navigation) {
+            const candidate = plan.candidate;
+            if (!candidate.href) continue;
+            const next = this.normalizeNavigableUrl(candidate.href, actualUrl);
+            if (!next) continue;
+            if (options.sameOriginOnly && new URL(next).origin !== origin) continue;
+            if (!visited.has(next) && !queuedUrls.has(next) && item.depth < options.maxDepth) {
+              this.coverage.discoverPage(next, item.depth + 1);
+              queued.push({
+                url: next,
+                depth: item.depth + 1,
+                source: { pageUrl: actualUrl, candidateId: candidate.id },
+              });
+              queuedUrls.add(next);
+            }
+          }
+
+          // Execute at most one interaction from a DOM snapshot. Any successful
+          // field/button action invalidates the remaining locator-index plan and
+          // forces a fresh candidate collection + ranking pass.
+          for (const plan of selected.interactions) {
+            if (actions >= options.maxActions) break;
+            const candidate = plan.candidate;
+
+            if (candidate.kind === 'field') {
+              const exercised = await this.probeField(page, candidate, events, actions + 1);
+              if (!exercised) continue;
+              actions += 1;
+              this.coverage.markCandidateExercised(actualUrl, candidate.id);
+              await this.captureInteractionState(page, candidate, events, actions);
+              shouldReplan = true;
+              events.push(this.event('planner', page.url(), 'Invalidated remaining interaction plans after field state transition', {
+                stateReplan: true,
+                candidateId: candidate.id,
+                interactionRound,
+              }));
+              break;
+            }
+
+            if (candidate.kind === 'button') {
+              const outcome = await this.probeButton(page, candidate, events, actions + 1);
+              if (!outcome.exercised) continue;
+              actions += 1;
+              this.coverage.markCandidateExercised(actualUrl, candidate.id);
+              await this.captureInteractionState(page, candidate, events, actions);
+
+              if (outcome.destination) {
+                const destination = this.normalizeNavigableUrl(outcome.destination, actualUrl);
+                if (destination && (!options.sameOriginOnly || new URL(destination).origin === origin)) {
+                  this.coverage.discoverPage(destination, item.depth + 1);
+                  if (!visited.has(destination) && !queuedUrls.has(destination) && item.depth < options.maxDepth) {
+                    queued.push({ url: destination, depth: item.depth + 1 });
+                    queuedUrls.add(destination);
+                  }
+                }
+                await page.goBack({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => undefined);
+                await page.waitForTimeout(120);
+              }
+
+              shouldReplan = true;
+              events.push(this.event('planner', page.url(), 'Invalidated remaining interaction plans after button state transition', {
+                stateReplan: true,
+                candidateId: candidate.id,
+                interactionRound,
+                navigated: Boolean(outcome.destination),
+              }));
+              break;
+            }
           }
         }
 
-        // Separately reserve real interaction capacity. Link-heavy products can
-        // therefore no longer starve buttons/fields out of every page budget.
-        for (const plan of selected.interactions) {
-          if (actions >= options.maxActions) break;
-          const candidate = plan.candidate;
-
-          if (candidate.kind === 'field') {
-            const exercised = await this.probeField(page, candidate, events, actions + 1);
-            if (!exercised) continue;
-            actions += 1;
-            this.coverage.markCandidateExercised(actualUrl, candidate.id);
-            await this.captureInteractionState(page, candidate, events, actions);
-            continue;
-          }
-
-          if (candidate.kind === 'button') {
-            const outcome = await this.probeButton(page, candidate, events, actions + 1);
-            if (!outcome.exercised) continue;
-            actions += 1;
-            this.coverage.markCandidateExercised(actualUrl, candidate.id);
-            await this.captureInteractionState(page, candidate, events, actions);
-
-            if (outcome.destination) {
-              const destination = this.normalizeNavigableUrl(outcome.destination, actualUrl);
-              if (destination && (!options.sameOriginOnly || new URL(destination).origin === origin)) {
-                this.coverage.discoverPage(destination, item.depth + 1);
-                if (!visited.has(destination) && item.depth < options.maxDepth) {
-                  queued.push({ url: destination, depth: item.depth + 1 });
-                }
-              }
-              await page.goBack({ waitUntil: 'domcontentloaded', timeout: 5_000 }).catch(() => undefined);
-              await page.waitForTimeout(120);
-            }
-          }
+        if (shouldReplan && interactionRound >= maxInteractionRounds) {
+          events.push(this.event('planner', actualUrl, 'Stopped state replanning at the per-page interaction-round budget', {
+            terminalGap: true,
+            gapReason: 'interaction-round-budget-exhausted',
+            interactionRounds: interactionRound,
+            maxInteractionRounds,
+          }));
         }
       }
 
@@ -239,8 +283,9 @@ export class BrowserExplorer {
   }
 
   private async collectCandidates(page: Page): Promise<ExplorationCandidate[]> {
-    return page.locator(BrowserExplorer.candidateSelector).evaluateAll((elements) =>
-      elements.slice(0, 160).map((element, locatorIndex) => {
+    return page.locator(BrowserExplorer.candidateSelector).evaluateAll((elements) => {
+      const occurrences = new Map<string, number>();
+      return elements.slice(0, 160).map((element, locatorIndex) => {
         const node = element as HTMLElement;
         const tagName = node.tagName.toLowerCase();
         const formControl = node as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
@@ -250,7 +295,7 @@ export class BrowserExplorer {
         const label = (
           associatedLabel || node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') ||
           node.getAttribute('name') || node.getAttribute('title') || ''
-        ).trim().slice(0, 120);
+        ).trim().replace(/\s+/g, ' ').slice(0, 120);
         const href = tagName === 'a' ? (node as HTMLAnchorElement).href : undefined;
         const button = tagName === 'button' ? (node as HTMLButtonElement) : undefined;
         const type = tagName === 'input'
@@ -264,9 +309,20 @@ export class BrowserExplorer {
                 : undefined;
         const formAction = button?.form?.action || ('form' in formControl ? formControl.form?.action : undefined);
         const kind = tagName === 'a' ? 'link' as const : ['input', 'textarea', 'select'].includes(tagName) ? 'field' as const : 'button' as const;
-        const stablePart = (label || href || tagName).replace(/\s+/g, ' ').slice(0, 80);
+        const identity = node.id
+          ? `id=${node.id}`
+          : node.getAttribute('name')
+            ? `name=${node.getAttribute('name')}`
+            : node.getAttribute('aria-label')
+              ? `aria=${node.getAttribute('aria-label')}`
+              : href
+                ? `href=${href}`
+                : `label=${label || tagName}`;
+        const stableBase = `${kind}:${tagName}:${identity.replace(/\s+/g, ' ').slice(0, 180)}`;
+        const occurrence = occurrences.get(stableBase) ?? 0;
+        occurrences.set(stableBase, occurrence + 1);
         return {
-          id: `${kind}:${locatorIndex}:${stablePart}`,
+          id: `${stableBase}:occurrence=${occurrence}`,
           kind,
           label,
           href,
@@ -279,13 +335,19 @@ export class BrowserExplorer {
           placeholder: node.getAttribute('placeholder') || undefined,
           autocomplete: node.getAttribute('autocomplete') || undefined,
         };
-      }),
-    );
+      });
+    });
   }
 
   private async probeField(page: Page, candidate: ExplorationCandidate, events: QaEvent[], actionNumber: number): Promise<boolean> {
     const locator = this.candidateLocator(page, candidate);
-    if (!(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) return false;
+    if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
+      events.push(this.event('action', page.url(), `Skip stale/unavailable field candidate: ${candidate.label || candidate.id}`, {
+        candidateId: candidate.id,
+        staleCandidate: true,
+      }));
+      return false;
+    }
 
     const strategy = this.inputStrategy.plan(candidate);
     if (strategy.action === 'skip') {
@@ -337,13 +399,11 @@ export class BrowserExplorer {
     actionNumber: number,
   ): Promise<{ exercised: boolean; destination?: string }> {
     const locator = this.candidateLocator(page, candidate);
-    if (!(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
-      return { exercised: false };
-    }
-
-    const currentLabel = ((await locator.innerText().catch(() => '')) || await locator.getAttribute('aria-label').catch(() => '') || '').trim().slice(0, 120);
-    if (candidate.label && currentLabel && currentLabel !== candidate.label) {
-      events.push(this.event('action', page.url(), `Skip stale candidate: ${candidate.label}`, { candidateId: candidate.id }));
+    if (!(await this.candidateStillMatches(locator, candidate)) || !(await locator.isVisible().catch(() => false)) || !(await locator.isEnabled().catch(() => false))) {
+      events.push(this.event('action', page.url(), `Skip stale/unavailable button candidate: ${candidate.label || candidate.id}`, {
+        candidateId: candidate.id,
+        staleCandidate: true,
+      }));
       return { exercised: false };
     }
 
@@ -370,6 +430,25 @@ export class BrowserExplorer {
 
   private candidateLocator(page: Page, candidate: ExplorationCandidate): Locator {
     return page.locator(BrowserExplorer.candidateSelector).nth(candidate.locatorIndex);
+  }
+
+  private async candidateStillMatches(locator: Locator, candidate: ExplorationCandidate): Promise<boolean> {
+    return locator.evaluate((element, expected) => {
+      const node = element as HTMLElement;
+      if (node.tagName.toLowerCase() !== expected.tagName) return false;
+      if (expected.name && node.getAttribute('name') !== expected.name) return false;
+      if (expected.href && node instanceof HTMLAnchorElement && node.href !== expected.href) return false;
+      const currentLabel = (
+        node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') || node.getAttribute('name') || node.getAttribute('title') || ''
+      ).trim().replace(/\s+/g, ' ').slice(0, 120);
+      if (expected.label && currentLabel && currentLabel !== expected.label) return false;
+      return true;
+    }, {
+      tagName: candidate.tagName,
+      name: candidate.name,
+      href: candidate.href,
+      label: candidate.label,
+    }).catch(() => false);
   }
 
   private async captureInteractionState(page: Page, candidate: ExplorationCandidate, events: QaEvent[], actionNumber: number): Promise<void> {
