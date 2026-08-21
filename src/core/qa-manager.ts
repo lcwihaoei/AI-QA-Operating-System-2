@@ -21,6 +21,7 @@ import { resolveVisualViewports, VisualAgent } from '../agents/visual-agent.js';
 import { ControlPlaneStore } from '../control/control-plane.js';
 import { CausalCorrelator } from '../correlation/causal-correlator.js';
 import { EvidenceStore } from '../evidence/evidence-store.js';
+import { applyFindingTruth } from '../findings/finding-truth-pipeline.js';
 import { GitHubQaPlanner } from '../github/github-qa-planner.js';
 import { CoverageGraph } from '../planning/coverage-graph.js';
 import { QaPlanner } from '../planning/qa-planner.js';
@@ -31,6 +32,7 @@ import { MiniMaxPlannerModel } from '../providers/minimax-planner-model.js';
 import { MiniMaxUxReasoner } from '../providers/minimax-ux-reasoner.js';
 import { findingsFromEvents } from '../reporting/bug-reporter.js';
 import { generateEvidenceReport } from '../reporting/evidence-report.js';
+import { ReproductionAgent } from '../reproduction/reproduction-agent.js';
 import { UxLearningStore } from '../ux/ux-learning-store.js';
 import type { UxOpportunity } from '../ux/ux-types.js';
 import { VisualBaselineStore } from '../visual/visual-baseline-store.js';
@@ -149,7 +151,9 @@ export class QaManager {
     });
 
     const correlation = new CausalCorrelator().correlate(exploration.events, api.events);
-    const events = [...exploration.events, ...visualEvents, ...api.events, ...correlation.events, ...semanticEvents, ...device.events];
+    const rawEvents = [...exploration.events, ...visualEvents, ...api.events, ...correlation.events, ...semanticEvents, ...device.events];
+    const reproduced = await new ReproductionAgent(exploration.storageState).run(rawEvents);
+    const events = applyFindingTruth(reproduced.events);
     const findings = findingsFromEvents(events);
 
     let ux = emptyUxSummary(options.uxIntelligence !== false);
@@ -205,7 +209,7 @@ export class QaManager {
     const result: QaRunResult = {
       runId, startedAt, finishedAt: new Date().toISOString(), visitedUrls: exploration.visitedUrls, actions: exploration.actions,
       events, findings, coverage: coverageGraph.snapshot(), visualBaseline, api: api.summary, correlation: correlation.summary,
-      semanticState, device: device.summary, githubQa, controlPlane, ux, uxLearning,
+      semanticState, device: device.summary, reproduction: reproduced.summary, githubQa, controlPlane, ux, uxLearning,
       report: emptyReportSummary(options.evidenceReport !== false), outputDir: evidence.runDir,
     };
 
