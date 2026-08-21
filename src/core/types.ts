@@ -109,10 +109,10 @@ export interface CoveragePageSnapshot {
   visits: number;
   discoveredCandidates: number;
   actionableCandidates: number;
-  eligibleCandidates: number;
+  eligibleCandidates?: number;
   exercisedCandidates: number;
-  terminalEligibleCandidates: number;
-  unexplainedEligibleCandidates: number;
+  terminalEligibleCandidates?: number;
+  unexplainedEligibleCandidates?: number;
   blockedCandidates: number;
   errors: number;
 }
@@ -121,13 +121,13 @@ export interface CoverageSnapshot {
   score: number;
   pageCoverage: number;
   interactionCoverage: number;
-  eligibleInteractions: number;
-  exercisedEligibleInteractions: number;
-  explainedEligibleGaps: number;
-  unexplainedEligibleGaps: number;
+  eligibleInteractions?: number;
+  exercisedEligibleInteractions?: number;
+  explainedEligibleGaps?: number;
+  unexplainedEligibleGaps?: number;
   pages: CoveragePageSnapshot[];
   gaps: string[];
-  terminalGaps: CoverageTerminalGap[];
+  terminalGaps?: CoverageTerminalGap[];
 }
 
 export interface VisualBaselineSummary {
