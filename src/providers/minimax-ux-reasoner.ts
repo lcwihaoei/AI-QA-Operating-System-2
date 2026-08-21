@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import type { UxOpportunityCategory, UxReasoner, UxReasonerContext } from '../ux/ux-types.js';
+import type {
+  UxOpportunityCategory,
+  UxReasoner,
+  UxReasonerContext,
+  UxReasonerExecutionMetadata,
+} from '../ux/ux-types.js';
 import { MiniMaxChatClient } from './minimax-chat-client.js';
 
 const categories: [UxOpportunityCategory, ...UxOpportunityCategory[]] = [
@@ -23,6 +28,15 @@ export class MiniMaxUxReasoner implements UxReasoner {
 
   constructor(apiKey: string, model = 'minimax-m3', baseUrl = 'https://api.minimaxi.com/v1') {
     this.client = new MiniMaxChatClient(apiKey, model, baseUrl);
+  }
+
+  getLastExecutionMetadata(): UxReasonerExecutionMetadata | undefined {
+    const stats = this.client.getLastCallStats();
+    if (!stats) return undefined;
+    return {
+      provider: `minimax:${stats.model}`,
+      repairAttempted: stats.schemaRepairAttempts > 0,
+    };
   }
 
   async propose(context: UxReasonerContext) {
