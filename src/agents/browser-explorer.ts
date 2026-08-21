@@ -29,6 +29,7 @@ export interface BrowserExplorationResult {
 
 export class BrowserExplorer {
   private static readonly candidateSelector = 'a[href], button, [role="button"], input:not([type="hidden"]), textarea, select';
+  private uiSignalCounter = 0;
 
   constructor(
     private readonly evidence: EvidenceStore,
@@ -145,7 +146,9 @@ export class BrowserExplorer {
             plan.candidate.kind === 'link'
             || (!this.coverage.wasCandidateExercised(actualUrl, plan.candidate.id)
               && !attemptedStateActions.has(stateActionKey(actualUrl, interactionStateId, plan.candidate.id))));
-          const selected = selectExplorationPlans(selectablePlans, options.maxCandidatesPerPage);
+          const selected = selectExplorationPlans(selectablePlans, options.maxCandidatesPerPage, {
+            remainingActions: options.maxActions - actions,
+          });
 
           for (const plan of duplicateStatePlans) {
             if (!this.coverage.candidateTerminalReason(actualUrl, plan.candidate.id)) {
@@ -347,6 +350,40 @@ export class BrowserExplorer {
   private async collectCandidates(page: Page): Promise<ExplorationCandidate[]> {
     return page.locator(BrowserExplorer.candidateSelector).evaluateAll((elements) => {
       const occurrences = new Map<string, number>();
+      const normalize = (value: string | null | undefined, max = 120): string => (value ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
+      const pathIdentity = (value: string | null | undefined): string | undefined => {
+        if (!value) return undefined;
+        try { return new URL(value, document.baseURI).pathname.slice(0, 240); }
+        catch { return value.split(/[?#]/, 1)[0]?.slice(0, 240); }
+      };
+      const ownerIdentity = (node: HTMLElement): string => {
+        const testAttribute = (element: Element): string | undefined =>
+          normalize(element.getAttribute('data-testid') || element.getAttribute('data-test') || element.getAttribute('data-cy'), 100) || undefined;
+        const owner = node.parentElement?.closest('form,dialog,[role="dialog"],[role="menu"],[role="tabpanel"],[role="region"]');
+        const parts: string[] = [];
+        if (owner) {
+          const ownerTest = testAttribute(owner);
+          if (ownerTest) parts.push(`test=${ownerTest}`);
+          else if ((owner as HTMLElement).id) parts.push(`id=${normalize((owner as HTMLElement).id, 100)}`);
+          else if (owner.getAttribute('aria-label')) parts.push(`aria=${normalize(owner.getAttribute('aria-label'), 100)}`);
+          else if (owner.getAttribute('role')) parts.push(`role=${normalize(owner.getAttribute('role'), 60)}`);
+          if (owner instanceof HTMLFormElement) {
+            const action = pathIdentity(owner.action);
+            if (action) parts.push(`action=${action}`);
+          }
+        }
+        let current: HTMLElement | null = node.parentElement;
+        const controls = Array.from(document.querySelectorAll<HTMLElement>('[aria-controls]'));
+        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+          if (!current.id) continue;
+          if (controls.some((control) => control.getAttribute('aria-controls') === current!.id)) {
+            parts.push(`controlled=${normalize(current.id, 100)}`);
+            break;
+          }
+        }
+        return parts.join('|') || 'root';
+      };
+
       return elements.slice(0, 160).map((element, locatorIndex) => {
         const node = element as HTMLElement;
         const tagName = node.tagName.toLowerCase();
@@ -354,10 +391,10 @@ export class BrowserExplorer {
         const associatedLabel = 'labels' in formControl
           ? Array.from(formControl.labels ?? []).map((label) => label.innerText.trim()).filter(Boolean).join(' ')
           : '';
-        const label = (
+        const label = normalize(
           associatedLabel || node.innerText || node.getAttribute('aria-label') || node.getAttribute('placeholder') ||
-          node.getAttribute('name') || node.getAttribute('title') || ''
-        ).trim().replace(/\s+/g, ' ').slice(0, 120);
+          node.getAttribute('name') || node.getAttribute('title') || '',
+        );
         const href = tagName === 'a' ? (node as HTMLAnchorElement).href : undefined;
         const button = tagName === 'button' ? (node as HTMLButtonElement) : undefined;
         const type = tagName === 'input'
@@ -371,25 +408,20 @@ export class BrowserExplorer {
                 : undefined;
         const formAction = button?.form?.action || ('form' in formControl ? formControl.form?.action : undefined);
         const kind = tagName === 'a' ? 'link' as const : ['input', 'textarea', 'select'].includes(tagName) ? 'field' as const : 'button' as const;
-        let hrefIdentity: string | undefined;
-        if (href) {
-          try {
-            const parsed = new URL(href);
-            hrefIdentity = parsed.pathname;
-          } catch {
-            hrefIdentity = href.split(/[?#]/, 1)[0];
-          }
-        }
-        const identity = node.id
-          ? `id=${node.id}`
-          : node.getAttribute('name')
-            ? `name=${node.getAttribute('name')}`
-            : node.getAttribute('aria-label')
-              ? `aria=${node.getAttribute('aria-label')}`
-              : hrefIdentity
-                ? `href=${hrefIdentity}`
-                : `label=${label || tagName}`;
-        const stableBase = `${kind}:${tagName}:${identity.replace(/\s+/g, ' ').slice(0, 180)}`;
+        const hrefIdentity = pathIdentity(href);
+        const testId = normalize(node.getAttribute('data-testid') || node.getAttribute('data-test') || node.getAttribute('data-cy'), 100);
+        const identity = testId
+          ? `test=${testId}`
+          : node.id
+            ? `id=${normalize(node.id, 100)}`
+            : node.getAttribute('name')
+              ? `name=${normalize(node.getAttribute('name'), 100)}`
+              : node.getAttribute('aria-label')
+                ? `aria=${normalize(node.getAttribute('aria-label'), 100)}`
+                : hrefIdentity
+                  ? `href=${hrefIdentity}`
+                  : `label=${label || tagName}`;
+        const stableBase = `${kind}:${tagName}:${identity}:owner=${ownerIdentity(node)}`.slice(0, 360);
         const occurrence = occurrences.get(stableBase) ?? 0;
         occurrences.set(stableBase, occurrence + 1);
         return {
@@ -635,11 +667,17 @@ export class BrowserExplorer {
       }
       return problems.slice(0, 20);
     });
+    if (signals.length === 0) return;
+    const screenshot = await this.evidence.screenshot(page, `ui-signal-${++this.uiSignalCounter}`).catch(() => undefined);
+    const interactionStateId = await this.interactionStateId(page, page.url());
     for (const signal of signals) {
       events.push(this.event('ui', page.url(), signal.message, {
         browserUi: true,
         uiKind: signal.uiKind,
         element: signal.element,
+        screenshot,
+        screenshotUnavailableReason: screenshot ? undefined : 'Signal-time browser screenshot capture failed.',
+        interactionStateId,
       }));
     }
   }
