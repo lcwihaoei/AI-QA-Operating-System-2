@@ -84,14 +84,16 @@ export interface PlannedCandidate {
 }
 
 export type CoverageTerminalReason =
-  | 'state-invalidated'
-  | 'stale-candidate'
-  | 'unsupported-field'
-  | 'navigation-depth-limit'
-  | 'route-already-covered'
-  | 'route-already-queued'
-  | 'interaction-round-budget-exhausted'
-  | 'action-budget-exhausted';
+  | 'budget-exhausted'
+  | 'duplicate-state-action'
+  | 'blocked-by-risk-policy'
+  | 'stale-after-state-change'
+  | 'not-visible'
+  | 'pointer-intercepted'
+  | 'auth-gated'
+  | 'unsupported-control'
+  | 'navigation-duplicate'
+  | 'execution-error';
 
 export interface CoverageTerminalGap {
   scope: 'interaction';
@@ -99,6 +101,8 @@ export interface CoverageTerminalGap {
   candidateId: string;
   label: string;
   reason: CoverageTerminalReason;
+  detail?: string;
+  eligible: boolean;
   explained: true;
 }
 
@@ -120,11 +124,17 @@ export interface CoveragePageSnapshot {
 export interface CoverageSnapshot {
   score: number;
   pageCoverage: number;
+  /** @deprecated Beta.9 allowed-candidate percentage. Read eligibleInteractionCoverage for Beta.10 decisions. */
   interactionCoverage: number;
+  rawInteractionCoverage?: number;
+  eligibleInteractionCoverage?: number;
+  discoveredInteractions?: number;
+  allowedInteractions?: number;
   eligibleInteractions?: number;
   exercisedEligibleInteractions?: number;
   explainedEligibleGaps?: number;
   unexplainedEligibleGaps?: number;
+  gapReasonCounts?: Partial<Record<CoverageTerminalReason, number>>;
   pages: CoveragePageSnapshot[];
   gaps: string[];
   terminalGaps?: CoverageTerminalGap[];
