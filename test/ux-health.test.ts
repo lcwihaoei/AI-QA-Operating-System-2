@@ -15,6 +15,14 @@ function summary(overrides: Partial<UxIntelligenceSummary> = {}): UxIntelligence
     highImpact: 0,
     mediumImpact: 2,
     lowImpact: 0,
+    reasonerStatus: {
+      configured: false,
+      attempted: false,
+      used: false,
+      repairAttempted: false,
+      fallbackUsed: false,
+      outcome: 'not-configured',
+    },
     reasonerUsed: false,
     ...overrides,
   };
