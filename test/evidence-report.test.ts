@@ -59,6 +59,17 @@ function result(runDir: string, screenshot: string): QaRunResult {
       fingerprint: 'abc123',
     }],
     coverage: { score: 73, pageCoverage: 100, interactionCoverage: 40, pages: [], gaps: [] },
+    planner: {
+      configured: true,
+      status: 'partial-fallback',
+      pagesObserved: 1,
+      pagesAttempted: 1,
+      pagesModelUsed: 0,
+      pagesFallback: 1,
+      repairAttempts: 1,
+      failedCalls: 1,
+      providers: ['fixture-model'],
+    },
     visualBaseline: { enabled: true, existed: true, newSignals: 1, persistentSignals: 2, resolvedSignals: 3, updated: false },
     api: { enabled: false, mode: 'off', operationsDiscovered: 0, operationsTested: 0, operationsSkipped: 0 },
     correlation: { chains: 0, highConfidence: 0, apiMatched: 0, browserNetworkFailures: 0 },
@@ -74,7 +85,7 @@ function result(runDir: string, screenshot: string): QaRunResult {
       enabled: true, pagesAttempted: 1, pagesAnalyzed: 1, pagesFailed: 0, completeness: 1, valid: true, score: 70,
       opportunities: 1, highImpact: 1, mediumImpact: 0, lowImpact: 0,
       reasonerStatus: {
-        configured: false, attempted: false, used: false, repairAttempted: false, fallbackUsed: false, outcome: 'not-configured',
+        configured: true, attempted: true, used: false, repairAttempted: false, fallbackUsed: true, outcome: 'fallback', error: 'schema-invalid',
       },
       reasonerUsed: false,
     },
@@ -123,6 +134,10 @@ describe('beta7 evidence report', () => {
     expect(html).toContain('<strong>100%</strong><span>Page coverage</span>');
     expect(html).toContain('<strong>40%</strong><span>Eligible interaction coverage</span>');
     expect(html).toContain('<strong>40%</strong><span>Raw interaction coverage</span>');
+    expect(html).toContain('AI execution truth');
+    expect(html).toContain('Partial fallback');
+    expect(html).toContain('Attempted · failed');
+    expect(html).not.toContain('AI Active');
     expect(html).not.toContain('10000%');
     expect(html).not.toContain('4000%');
     expect(data).toContain('"status": "new"');
@@ -131,8 +146,12 @@ describe('beta7 evidence report', () => {
     expect(data).toContain('"interactionCoverage": 40');
     expect(data).toContain('"rawInteractionCoverage": 40');
     expect(data).toContain('"eligibleInteractionCoverage": 40');
+    expect(data).toContain('"modelExecution"');
+    expect(data).toContain('"status": "partial-fallback"');
     expect(data).not.toContain(runDir);
     expect(markdown).toContain('PASS_WITH_ISSUES');
+    expect(markdown).toContain('- Planner execution: Partial fallback');
+    expect(markdown).toContain('- UX reasoner: Attempted · failed');
     expect(markdown).toContain('- Page coverage: 100%');
     expect(markdown).toContain('- Raw interaction coverage: 40%');
     expect(markdown).toContain('- Eligible interaction coverage: 40%');
