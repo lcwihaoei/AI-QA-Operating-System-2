@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,5 +29,34 @@ describe('EvidenceStore device screenshots', () => {
     const store = new EvidenceStore(root, 'run-2');
     await store.init();
     await expect(store.writePngBase64(Buffer.from('not a png').toString('base64'), 'bad')).rejects.toThrow(/not a PNG/);
+  });
+
+  it('gzips oversized HAR artifacts and removes the uncompressed source', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'aiqa-har-'));
+    roots.push(root);
+    const store = new EvidenceStore(root, 'run-har');
+    await store.init();
+    const source = path.join(store.runDir, 'network.har');
+    await writeFile(source, JSON.stringify({ log: { entries: Array.from({ length: 100 }, () => ({ request: { url: 'https://example.test/api/data' }, response: { status: 200 } })) } }));
+
+    const result = await store.compactHar(100);
+    expect(result?.compacted).toBe(true);
+    expect(result?.target).toBe(`${source}.gz`);
+    await expect(access(source)).rejects.toThrow();
+    const compressed = await readFile(`${source}.gz`);
+    expect(compressed[0]).toBe(0x1f);
+    expect(compressed[1]).toBe(0x8b);
+  });
+
+  it('leaves small HAR artifacts uncompressed', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'aiqa-har-'));
+    roots.push(root);
+    const store = new EvidenceStore(root, 'run-small-har');
+    await store.init();
+    const source = path.join(store.runDir, 'network.har');
+    await writeFile(source, '{"log":{"entries":[]}}');
+    const result = await store.compactHar(1_000_000);
+    expect(result?.compacted).toBe(false);
+    await expect(access(source)).resolves.toBeUndefined();
   });
 });
