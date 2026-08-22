@@ -3,7 +3,7 @@ name: Verified Release
 on:
   push:
     branches:
-      - fix/v0.10.0-beta.6-qa-engine-reliability
+      - fix/v0.10.0-beta.7-qa-engine-reliability
     paths:
       - release-manifest.json
       - RELEASE_NOTES.md
