@@ -50,8 +50,6 @@ export function isActionablyOffscreen(rect: RectSnapshot, viewportWidth: number)
     || rect.x < -4
     || rect.x + rect.width > viewportWidth + 4;
   const aboveViewport = rect.y + rect.height <= 0;
-  // Deliberately do not treat y >= viewport height as a defect: normal long pages
-  // place reachable controls below the fold and users can scroll to them.
   return horizontallyImpossible || aboveViewport;
 }
 
@@ -100,8 +98,15 @@ export class DomGeometryAnalyzer {
         || node.classList.contains('screen-reader-text');
 
       const hasDrawerSemantics = (node: HTMLElement): boolean => {
-        const marker = `${node.id} ${typeof node.className === 'string' ? node.className : ''}`.toLowerCase();
-        return /(offcanvas|off-canvas|drawer|sidebar|side-nav|sidenav|mobile-menu|navigation-drawer)/.test(marker);
+        const tagName = node.tagName.toLowerCase();
+        const role = (node.getAttribute('role') || '').toLowerCase();
+        const containerLike = ['nav', 'aside', 'div', 'section'].includes(tagName)
+          || role === 'navigation'
+          || role === 'complementary'
+          || role === 'dialog';
+        const classMarker = typeof node.className === 'string' ? node.className : '';
+        const idMarker = containerLike ? node.id : '';
+        return /(offcanvas|off-canvas|drawer|sidebar|side-nav|sidenav|mobile-menu|navigation-drawer)/i.test(`${idMarker} ${classMarker}`);
       };
 
       const isExplicitlyOpenPanel = (node: HTMLElement): boolean => node.classList.contains('show')
@@ -122,7 +127,7 @@ export class DomGeometryAnalyzer {
         const transformed = style.transform !== 'none' && style.transform !== '';
         const left = Number.parseFloat(style.left || '0');
         const right = Number.parseFloat(style.right || '0');
-        const translatedByInset = Number.isFinite(left) && left < -4 || Number.isFinite(right) && right < -4;
+        const translatedByInset = (Number.isFinite(left) && left < -4) || (Number.isFinite(right) && right < -4);
         return positionedPanel || transformed || translatedByInset;
       };
 
