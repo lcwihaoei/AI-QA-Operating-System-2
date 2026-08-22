@@ -28,16 +28,25 @@ const finding: Finding = {
   fingerprint: 'abc123',
 };
 
-describe('GitHub regression memory v2', () => {
-  it('writes versioned finding-v2 memory', async () => {
+describe('GitHub regression memory beta.6 classifier boundary', () => {
+  it('writes versioned finding-v2 memory with beta.6 classifier provenance', async () => {
     const file = await tempFile();
     const store = new GitHubRegressionMemoryStore(file);
     await store.save([finding], new Map());
-    const document = JSON.parse(await readFile(file, 'utf8')) as { version?: number; fingerprintSchema?: string };
-    expect(document.version).toBe(2);
+    const document = JSON.parse(await readFile(file, 'utf8')) as { version?: number; fingerprintSchema?: string; classifierVersion?: string };
+    expect(document.version).toBe(3);
     expect(document.fingerprintSchema).toBe('finding-v2');
+    expect(document.classifierVersion).toBe('qa-engine-beta6');
     const loaded = await store.load();
     expect(loaded.entries.has('abc123')).toBe(true);
+  });
+
+  it('does not trust beta.5 v2 memory after beta.6 classifier changes', async () => {
+    const file = await tempFile();
+    await writeFile(file, JSON.stringify({ version: 2, fingerprintSchema: 'finding-v2', updatedAt: new Date().toISOString(), findings: [] }));
+    const loaded = await new GitHubRegressionMemoryStore(file).load();
+    expect(loaded.entries.size).toBe(0);
+    expect(loaded.toolingError).toMatch(/beta\.5/i);
   });
 
   it('does not trust beta.4 v1 memory after classifier changes', async () => {
