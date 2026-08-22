@@ -18,16 +18,16 @@ function plan(kind: 'link' | 'button' | 'field', index: number, score: number, h
 }
 
 describe('selectExplorationPlans', () => {
-  it('reserves interaction capacity when high-ranked links dominate', () => {
+  it('reserves substantial interaction capacity when high-ranked links dominate', () => {
     const plans = [
       ...Array.from({ length: 20 }, (_, index) => plan('link', index, 200 - index)),
-      plan('button', 30, 20),
-      plan('field', 31, 19),
+      ...Array.from({ length: 8 }, (_, index) => plan(index % 2 === 0 ? 'button' : 'field', 30 + index, 30 - index)),
     ];
     const selected = selectExplorationPlans(plans, 12);
-    expect(selected.navigation.length).toBeGreaterThanOrEqual(8);
-    expect(selected.interactions.length).toBeGreaterThanOrEqual(1);
+    expect(selected.navigation.length).toBeGreaterThanOrEqual(6);
+    expect(selected.interactions.length).toBeGreaterThanOrEqual(5);
     expect(selected.interactions.some((item) => item.candidate.kind === 'button')).toBe(true);
+    expect(selected.interactions.some((item) => item.candidate.kind === 'field')).toBe(true);
   });
 
   it('reserves navigation breadth when interactions dominate ranking', () => {
@@ -39,6 +39,16 @@ describe('selectExplorationPlans', () => {
     const selected = selectExplorationPlans(plans, 6);
     expect(selected.navigation.map((item) => item.candidate.id)).toEqual(['link-30', 'link-31']);
     expect(selected.interactions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('caps safe interaction expansion at eight slots per page', () => {
+    const plans = [
+      ...Array.from({ length: 30 }, (_, index) => plan('link', index, 300 - index)),
+      ...Array.from({ length: 30 }, (_, index) => plan(index % 2 === 0 ? 'button' : 'field', 50 + index, 200 - index)),
+    ];
+    const selected = selectExplorationPlans(plans, 30);
+    expect(selected.interactions).toHaveLength(8);
+    expect(selected.navigation.length + selected.interactions.length).toBeLessThanOrEqual(30);
   });
 
   it('diversifies top-level route families before filling one family deeply', () => {
