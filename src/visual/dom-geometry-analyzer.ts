@@ -99,13 +99,31 @@ export class DomGeometryAnalyzer {
         || node.classList.contains('sr-only')
         || node.classList.contains('screen-reader-text');
 
-      const isClosedBootstrapOffcanvas = (node: HTMLElement): boolean => {
-        if (!node.classList.contains('offcanvas')) return false;
-        const explicitlyOpen = node.classList.contains('show')
-          || node.getAttribute('data-state') === 'open'
-          || node.getAttribute('data-open') === 'true'
-          || node.getAttribute('aria-hidden') === 'false';
-        return !explicitlyOpen;
+      const hasDrawerSemantics = (node: HTMLElement): boolean => {
+        const marker = `${node.id} ${typeof node.className === 'string' ? node.className : ''}`.toLowerCase();
+        return /(offcanvas|off-canvas|drawer|sidebar|side-nav|sidenav|mobile-menu|navigation-drawer)/.test(marker);
+      };
+
+      const isExplicitlyOpenPanel = (node: HTMLElement): boolean => node.classList.contains('show')
+        || node.classList.contains('open')
+        || node.classList.contains('active')
+        || node.getAttribute('data-state') === 'open'
+        || node.getAttribute('data-open') === 'true'
+        || node.getAttribute('aria-hidden') === 'false';
+
+      const isClosedCssOffcanvas = (node: HTMLElement): boolean => {
+        if (!hasDrawerSemantics(node) || isExplicitlyOpenPanel(node)) return false;
+        const style = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        const fullyOutsideHorizontally = rect.right <= 0 || rect.left >= window.innerWidth;
+        if (!fullyOutsideHorizontally) return false;
+
+        const positionedPanel = ['fixed', 'absolute', 'sticky'].includes(style.position);
+        const transformed = style.transform !== 'none' && style.transform !== '';
+        const left = Number.parseFloat(style.left || '0');
+        const right = Number.parseFloat(style.right || '0');
+        const translatedByInset = Number.isFinite(left) && left < -4 || Number.isFinite(right) && right < -4;
+        return positionedPanel || transformed || translatedByInset;
       };
 
       const isSuppressedByDesign = (element: Element): boolean => {
@@ -113,7 +131,7 @@ export class DomGeometryAnalyzer {
         while (current) {
           if (current.hidden || current.getAttribute('aria-hidden') === 'true' || current.hasAttribute('inert')) return true;
           if (current.getAttribute('data-state') === 'closed' || current.getAttribute('data-open') === 'false') return true;
-          if (isVisuallyHiddenClass(current) || isClosedBootstrapOffcanvas(current)) return true;
+          if (isVisuallyHiddenClass(current) || isClosedCssOffcanvas(current)) return true;
 
           const style = getComputedStyle(current);
           if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return true;
