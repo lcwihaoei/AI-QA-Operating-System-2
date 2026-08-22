@@ -1,6 +1,6 @@
-# AI QA Operating System v0.10.0-beta.6
+# AI QA Operating System v0.10.0-beta.7
 
-QA-engine reliability release focused on reducing visual false positives, increasing meaningful safe interaction coverage, shrinking oversized network evidence, and preserving explicit baseline/regression boundaries after classifier changes.
+Reliability follow-up that ships the complete post-field-validation hardening set after the immutable `v0.10.0-beta.6` tag had already been created before the final fixes landed. This release is the recommended successor to beta.6.
 
 ## Visual classifier reliability
 
@@ -16,7 +16,7 @@ QA-engine reliability release focused on reducing visual false positives, increa
 
 ## Exploration reliability and coverage
 
-Beta.5 field validation showed that reserving at most three non-link interactions per page could leave complex frontends with only a few percent interaction coverage. Beta.6 keeps route-family breadth while expanding deterministic safe interaction capacity:
+Beta.5 field validation showed that reserving at most three non-link interactions per page could leave complex frontends with only a few percent interaction coverage. The current selector keeps route-family breadth while expanding deterministic safe interaction capacity:
 
 - safe interactions may use up to 45% of the per-page candidate budget, capped at eight slots;
 - at least one safe button and one safe field are preferred when present;
@@ -27,9 +27,9 @@ Browser probe failures and synthetic-input failures remain diagnostic events but
 
 ## Evidence storage
 
-Large Vite/SPA runs can produce highly repetitive HAR files approaching gigabyte scale. Beta.6 adds bounded post-run HAR compaction:
+Large Vite/SPA runs can produce highly repetitive HAR files approaching gigabyte scale. Oversized completed HAR evidence is now compacted after browser shutdown:
 
-- `network.har` files at or above 5 MB are gzip-compressed to `network.har.gz` after the browser context closes;
+- `network.har` files at or above 5 MB are gzip-compressed to `network.har.gz`;
 - the original uncompressed HAR is removed only after successful compression;
 - small HAR files are left untouched;
 - HAR compaction failure never blocks `result.json` generation.
@@ -38,7 +38,7 @@ This reduces persistent evidence storage without weakening browser/network error
 
 ## Regression coverage
 
-The real-Chromium DOM geometry fixture verifies all of the following:
+Real-Chromium and deterministic regressions verify:
 
 - screen-reader-only content is ignored;
 - closed negative-inset off-canvas content is ignored;
@@ -50,20 +50,18 @@ The real-Chromium DOM geometry fixture verifies all of the following:
 - intentional ellipsis is ignored;
 - disabled offscreen controls are ignored;
 - a truly unreachable horizontal control is retained;
-- an explicitly open generic sidebar with a broken offscreen action is retained.
-
-Additional regressions lock the expanded interaction budget, the eight-interaction cap, blocked-candidate exclusion, and oversized/small HAR behavior.
+- an explicitly open generic sidebar with a broken offscreen action is retained;
+- expanded interaction quota still preserves route breadth and blocked-candidate exclusion;
+- oversized HAR evidence is compressed while small HAR evidence remains intact.
 
 ## Baseline and memory migration
 
-The beta.6 classifier changes the population of deterministic visual findings, so beta.5 accepted state is not silently reused:
+The beta.6 classifier boundary remains authoritative for beta.7:
 
 - Visual baseline schema is version 3 with `analyzerVersion: "dom-geometry-v3"`.
-- beta.5 version-2 visual baselines are treated as untrusted until explicitly regenerated after a healthy beta.6 run.
-- GitHub regression memory is version 3 while retaining `fingerprintSchema: "finding-v2"` and adding `classifierVersion: "qa-engine-beta6"`.
-- beta.5 version-2 regression memory must be explicitly regenerated after confirming beta.6 finding behavior.
-
-This preserves the existing fingerprint algorithm while making the classifier boundary explicit.
+- beta.5 version-2 visual baselines are untrusted until explicitly regenerated after a healthy beta.6+ run.
+- GitHub regression memory is version 3 while retaining `fingerprintSchema: "finding-v2"` and `classifierVersion: "qa-engine-beta6"`.
+- beta.5 version-2 regression memory must be explicitly regenerated after confirming the new classifier behavior.
 
 ## Verified release gates
 
@@ -86,6 +84,7 @@ The prerelease workflow requires:
 ## Safety posture
 
 - This remains a prerelease.
-- Release creation targets the verified beta.6 branch SHA; `main` remains the review/merge surface until explicitly merged.
+- The existing `v0.10.0-beta.6` tag is not rewritten; beta.7 carries the complete verified follow-up code.
+- Release creation targets the verified beta.7 branch SHA; `main` remains the review/merge surface until explicitly merged.
 - UX opportunities remain separate from deterministic product defects.
 - Baseline and regression-memory writes remain explicit opt-ins and are never silently accepted.
