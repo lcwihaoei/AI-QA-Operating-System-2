@@ -23,9 +23,6 @@ function balancedNavigation(links: PlannedCandidate[], quota: number): PlannedCa
   const usedIds = new Set<string>();
   const seenFamilies = new Set<string>();
 
-  // First pass: take the highest-ranked representative of each top-level route
-  // family. This prevents /settings/* from consuming the whole page budget while
-  // /learning, /vocabulary or /practice remain untouched.
   for (const plan of links) {
     if (selected.length >= quota) break;
     const family = routeFamily(plan);
@@ -35,7 +32,6 @@ function balancedNavigation(links: PlannedCandidate[], quota: number): PlannedCa
     seenFamilies.add(family);
   }
 
-  // Second pass: fill unused capacity by the planner's original ranking.
   for (const plan of links) {
     if (selected.length >= quota) break;
     if (usedIds.has(plan.candidate.id)) continue;
@@ -49,16 +45,19 @@ function balancedInteractions(interactions: PlannedCandidate[], quota: number): 
   if (quota <= 0) return [];
   const selected: PlannedCandidate[] = [];
   const used = new Set<string>();
+
   const firstButton = interactions.find((plan) => plan.candidate.kind === 'button');
   if (firstButton) {
     selected.push(firstButton);
     used.add(firstButton.candidate.id);
   }
+
   const firstField = interactions.find((plan) => plan.candidate.kind === 'field' && !used.has(plan.candidate.id));
   if (selected.length < quota && firstField) {
     selected.push(firstField);
     used.add(firstField.candidate.id);
   }
+
   for (const plan of interactions) {
     if (selected.length >= quota) break;
     if (used.has(plan.candidate.id)) continue;
@@ -71,12 +70,12 @@ function balancedInteractions(interactions: PlannedCandidate[], quota: number): 
 /**
  * Keep route discovery and real interaction probing from starving each other.
  *
- * The planner may rank many candidates of one kind or route family above the
- * others. Taking a single top-N slice therefore turns a nominal BFS crawl into
- * a narrow route chain, or prevents buttons from ever being clicked. This
- * selector reserves capacity for both safe navigation and non-link
- * interactions, diversifies navigation by top-level route family, and reserves
- * a button slot when an allowed button exists.
+ * Beta.5 field validation showed that reserving at most three interactions per
+ * page still left complex frontends at only a few percent interaction coverage.
+ * Beta.6 keeps BFS route diversity, but lets safe interactions consume up to
+ * 45% of the per-page candidate budget (capped at eight) so forms, tabs,
+ * dropdowns and modal controls are exercised more deeply without relaxing the
+ * deterministic risk policy.
  */
 export function selectExplorationPlans(plans: PlannedCandidate[], limit: number): ExplorationSelection {
   const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 100));
@@ -86,14 +85,10 @@ export function selectExplorationPlans(plans: PlannedCandidate[], limit: number)
 
   if (links.length === 0) return { navigation: [], interactions: balancedInteractions(interactions, boundedLimit) };
   if (interactions.length === 0) return { navigation: balancedNavigation(links, boundedLimit), interactions: [] };
-  if (boundedLimit === 1) {
-    return { navigation: balancedNavigation(links, 1), interactions: [] };
-  }
+  if (boundedLimit === 1) return { navigation: balancedNavigation(links, 1), interactions: [] };
 
-  const interactionQuota = Math.min(
-    interactions.length,
-    Math.max(1, Math.min(3, Math.floor(boundedLimit * 0.34))),
-  );
+  const desiredInteractions = Math.max(1, Math.round(boundedLimit * 0.45));
+  const interactionQuota = Math.min(interactions.length, Math.min(8, desiredInteractions));
   const navigationQuota = Math.min(links.length, Math.max(1, boundedLimit - interactionQuota));
 
   let selectedInteractions = balancedInteractions(interactions, interactionQuota);
